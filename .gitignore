@@ -1,0 +1,11 @@
+# ignore all files in Amazon Fashion Example directory
+Amazon_Fashion_Example/
+
+# ignore all files in atomic data path directory
+atomic_data_path/Amazon_Fashion
+
+# ignore all files in the dataset directory
+dataset/
+
+# ignore virtual environment
+MRSenv/
