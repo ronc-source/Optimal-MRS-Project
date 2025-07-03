@@ -1,0 +1,29 @@
+# atomic files
+data_path: C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/atomic_data_path
+dataset: Amazon_Fashion
+
+# dataset config
+USER_ID_FIELD: user_id
+ITEM_ID_FIELD: parent_asin
+
+load_col:
+  inter:  [user_id, parent_asin, rating, timestamp, text_emb]
+  user:   [user_id]
+  item:   [parent_asin, average_rating, rating_number, price, description_emb, images_emb]
+
+field_separator: "\t"
+
+model: InlineViTRecommender
+embedding_size: 64
+loss_type: BPRLoss
+train_batch_size: 1024
+eval_batch_size: 1024
+epochs: 20
+
+metrics: [Recall, MRR, NDCG, GAUC]
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  group_by: user
+  order: RO
+

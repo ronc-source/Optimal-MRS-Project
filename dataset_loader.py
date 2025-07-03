@@ -39,7 +39,7 @@ with open(file, 'r') as fp:
 #   parent_asin:token -> parent_asin (str)
 #   rating:float -> rating (from 1.0 to 5.0 / type float)
 #   timestamp:float -> timestamp (int)
-#   text:token_seq -> text (text body of user review / type str)
+#   text_emb:float_seq -> text (BERT text embedding of text body of user review / type str)
 
 ####################################################
 # 2. meta_review_Amazon_Fashion.user (User feature)
@@ -58,14 +58,16 @@ with open(file, 'r') as fp:
 #   average_rating:float -> average_rating (float)
 #   rating_number:float -> rating_number (int)
 #   price:float -> price (float)
-#   description_token_seq -> description (array of sentence descriptions / type list)
-#   images <TBD>
+#   description:token_seq -> description (array of sentence descriptions / type list)
+#   images_url:token -> images (.jpg URL for "large" images / only using 1 image)
 
 #  images (list)
 
 
 import json
 import csv
+import torch
+from transformers import BertTokenizer, BertModel
 import os
 
 # Parameters
@@ -75,6 +77,61 @@ amazonReviewFile = currentDirectory + "/dataset/review_Amazon_Fashion.jsonl"
 amazonMetaFile = currentDirectory + "/dataset/meta_Amazon_Fashion.jsonl"
 
 outputDir = currentDirectory + "/atomic_data_path/Amazon_Fashion"
+
+# Max amnount of text tokens we will feed to BERT
+MAX_TEXT_TOKEN_LENGTH = 128
+
+# Load BERT
+
+# Use GPU for tensor and model, otherwise CPU
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+
+# bert-base-uncased is a pretrained English model
+
+# tokenizer stays on CPU
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+# Model is moved to device, so its weights and any new tensors it allocates live on GPU if available
+model = BertModel.from_pretrained('bert-base-uncased').to(device)
+
+# disable dropout as it is not needed
+model.eval()
+
+
+# Text Encoder - BERT
+def encodeText(text, tokenizer, model, device, maxLength = MAX_TEXT_TOKEN_LENGTH):
+    """
+    Return a torch.Tensor of shape [D]
+    If text is blank/empty, return a zero vector of appropriate size
+    """
+
+    # 768 dim embedding
+    D = model.config.hidden_size
+
+    # text is empty, so default to zero vector
+    if not text.strip():
+        return torch.zeros(D, device=device)
+    
+    inputs = tokenizer(
+        text,
+        max_length = maxLength,
+        padding = "max_length",
+        truncation = True,
+        return_tensors = "pt"
+    )
+
+    # Move token tensors to the same device as the model
+    inputs = {k : v.to(device) for k, v in inputs.items()}
+
+    # Inference on device
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    # Return the [CLS] embedding on that device
+    return outputs.last_hidden_state[0, 0, :].to(device)
 
 
 '''
@@ -87,24 +144,27 @@ with open(amazonReviewFile, "r", encoding="utf-8") as fp, open(outputDir + "/Ama
         "parent_asin:token",
         "rating:float",
         "timestamp:float",
-        "text:token_seq"
+        "text_emb:float_seq"
     ])
 
     for line in fp:
         dataLine = json.loads(line.strip())
 
         # Convert text review to token sequence, split with spaces
-        textTokenSeq = " ".join(dataLine["text"].split(" "))
+        textEmbedding = encodeText(dataLine["text"], tokenizer, model, device)
+
+        # print(len(textEmbedding)) -> 768
+        
+        textEmbeddingSequence = " ".join(f"{x:.6f}" for x in textEmbedding)
 
         writer.writerow([
             dataLine["user_id"],
             dataLine["parent_asin"],
             dataLine["rating"],
             dataLine["timestamp"],
-            textTokenSeq
+            textEmbeddingSequence
         ])
 '''
-
 
 '''
 # 2. Build .user file
@@ -123,12 +183,44 @@ with open(amazonReviewFile, "r", encoding="utf-8") as fp, open(outputDir + "/Ama
         ])
 '''
 
-# 3. Build .item file -> same images as URL from jsonl -> create custom model to process these images and convert them to image embeddings uising vit
+
+# 3. Build .item file -> save images as URL from jsonl -> create custom model to process these images and convert them to image embeddings uising vit
 import requests
 from PIL import Image
 import torch
-from torchvision import transformers
-import timm
+from torchvision import transforms
+from torchvision.models import resnet50
 
-# Use ViT to create image embeddings
 
+with open(amazonMetaFile, "r", encoding="utf-8") as fp, open(outputDir + "/Amazon_Fashion.item", "w", newline = "", encoding="utf-8") as fitem:
+    writer = csv.writer(fitem, delimiter='\t')
+
+    writer.writerow([
+        "parent_asin:token",
+        "average_rating:float",
+        "rating_number:float",
+        "price:float",
+        "description_emb:float_seq",
+        "images_emb:float_seq"
+    ])
+
+    for line in fp:
+        dataLine = json.loads(line.strip())
+
+        # Convert item description to token sequence, split with spaces
+        descTokenSeq = " ".join(dataLine["description"])
+
+        imageURL = None
+
+        if dataLine["images"]:
+            if "large" in dataLine["images"][0]:
+                imageURL = dataLine["images"][0]["large"]
+
+        writer.writerow([
+            dataLine["parent_asin"],
+            dataLine["average_rating"],
+            dataLine["rating_number"],
+            dataLine["price"],
+            descTokenSeq,
+            imageURL
+        ])

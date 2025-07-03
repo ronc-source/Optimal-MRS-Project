@@ -1,5 +1,5 @@
-from recbole.quick_start import run_recbole
+#from recbole.quick_start import run_recbole
 
-run_recbole(model='BPR', dataset='ml-100k')
+#run_recbole(model='BPR', dataset='ml-100k')
 
 # Next step to load dataset - https://recbole.io/docs/user_guide/usage/running_new_dataset.html

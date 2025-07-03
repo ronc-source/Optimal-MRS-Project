@@ -9,3 +9,9 @@ dataset/
 
 # ignore virtual environment
 MRSenv/
+
+# ignore discard folder
+discard/
+
+# ignore pycache
+__pycache__/
