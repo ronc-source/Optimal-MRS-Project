@@ -92,13 +92,13 @@ else:
 # bert-base-uncased is a pretrained English model
 
 # tokenizer stays on CPU
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+bertTokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 # Model is moved to device, so its weights and any new tensors it allocates live on GPU if available
-model = BertModel.from_pretrained('bert-base-uncased').to(device)
+bertModel = BertModel.from_pretrained('bert-base-uncased').to(device)
 
 # disable dropout as it is not needed
-model.eval()
+bertModel.eval()
 
 
 # Text Encoder - BERT
@@ -151,7 +151,7 @@ with open(amazonReviewFile, "r", encoding="utf-8") as fp, open(outputDir + "/Ama
         dataLine = json.loads(line.strip())
 
         # Convert text review to token sequence, split with spaces
-        textEmbedding = encodeText(dataLine["text"], tokenizer, model, device)
+        textEmbedding = encodeText(dataLine["text"], bertTokenizer, bertModel, device)
 
         # print(len(textEmbedding)) -> 768
         
@@ -190,6 +190,41 @@ from PIL import Image
 import torch
 from torchvision import transforms
 from torchvision.models import resnet50
+import io
+
+# Use GPU for tensor and model, otherwise CPU
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+
+# Give us ImageNet trained weights so our embeddings will be able to capture rich visual features
+model = resnet50(pretrained=True)
+
+# Save feature dimension before dropping the classification head -> value is usually 2048 for resnet
+resnetFeatDim = model.fc.in_features
+
+# Remove the final classification layer so the model returns the raw 2048 dimension feature vector instead of class scores
+model.fc = torch.nn.Identity()
+
+# turn off dropout since we are only doing inference (using a model to make predictions or generate output based on new, unseen data)
+model = model.to(device).eval()
+
+
+# Setup ImageNet preprocessing
+preprocess = transforms.Compose([
+
+    # Resize images to the same dimensions that ResNet was trained on
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+
+    # Convert PIL image to tensor multidimensional array
+    transforms.ToTensor(),
+
+    # Use the same values that ImageNet models expect so the activation function lands in the expected range
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
 
 
 with open(amazonMetaFile, "r", encoding="utf-8") as fp, open(outputDir + "/Amazon_Fashion.item", "w", newline = "", encoding="utf-8") as fitem:
@@ -207,20 +242,60 @@ with open(amazonMetaFile, "r", encoding="utf-8") as fp, open(outputDir + "/Amazo
     for line in fp:
         dataLine = json.loads(line.strip())
 
-        # Convert item description to token sequence, split with spaces
+        # Get description text embedding via BERT
+
         descTokenSeq = " ".join(dataLine["description"])
 
-        imageURL = None
+        # Convert text review to token sequence, split with spaces
+        descEmbedding = encodeText(descTokenSeq, bertTokenizer, bertModel, device)
+
+        # Should be 768
+        #print("Description BERT embedding length:", len(descEmbedding))
+        
+        descEmbeddingSequence = " ".join(f"{x:.6f}" for x in descEmbedding)
+
+        imageURL = ""
 
         if dataLine["images"]:
             if "large" in dataLine["images"][0]:
                 imageURL = dataLine["images"][0]["large"]
+
+        if imageURL:
+            try:
+                # Download with a 10 second timeout to avoid broken URLs
+                resp = requests.get(imageURL, timeout=10)
+
+                # Convert image to RGB as ResNet does not accept grayscale
+                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+                # Add batch dimensions - shape [1, 3, 224, 224]
+                x = preprocess(img).unsqueeze(0).to(device)
+
+                # So PyTorch does not build a gradient graph and we save memory
+                with torch.no_grad():
+                    # shape [2048]
+                    feat = model(x).squeeze(0)
+
+                # Extract a pure Python list of floats to represent the image embedding
+                imageEmb = feat.tolist()
+            except Exception:
+                # In case of any issues with the image embedding, use a zero vector
+                imageEmb = [0.0] * resnetFeatDim
+        else:
+            imageEmb = [0.0] * resnetFeatDim
+        
+        # Image embedding dimension length -> 2048
+        #print("Image ResNet embedding dimension length", len(imageEmb))
+
+        # Set the image embedding to space separated floats for the float_seq requirement in the atomic file
+        # Set the float value to 6 decimal places
+        imageEmbeddingSequence = " ".join(f"{v:.6f}" for v in imageEmb)
 
         writer.writerow([
             dataLine["parent_asin"],
             dataLine["average_rating"],
             dataLine["rating_number"],
             dataLine["price"],
-            descTokenSeq,
-            imageURL
+            descEmbeddingSequence,
+            imageEmbeddingSequence
         ])
