@@ -15,3 +15,14 @@ discard/
 
 # ignore pycache
 __pycache__/
+
+# ignore logs
+log/
+log_tensorboard/
+saved/
+
+# ignore smoke test
+smoke_test.py
+
+# ignore old atomic files
+old_atomic_files/

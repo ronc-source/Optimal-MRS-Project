@@ -1,121 +1,105 @@
-import json
+# create atomic files required to train recommender model based on Amazon Fashion dataset from https://amazon-reviews-2023.github.io/
 
-#currentDirectory = "C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project"
+# NOTE:
+#   link Amazon Review and Amazon Product Metadata using parent_asin field
+#   asin of the product is the same as parent_asin for user reviews and item metadata
 
-# Test Load Amazon Fashion Reviews
-
-'''
-file = currentDirectory + "/dataset/review_Amazon_Fashion.jsonl"
-
-with open(file, 'r') as fp:
-    for line in fp:
-        print(json.loads(line.strip()))
-        break
-'''
-
-# Test Load Amazon Fashion Metadata (Text + Images)
-
-'''
-file = currentDirectory + "/dataset/meta_Amazon_Fashion.jsonl"
-
-with open(file, 'r') as fp:
-    for line in fp:
-        print(json.loads(line.strip()))
-        break
-'''
-
-# Link Amazon Review and Amazon Product Metadata using parent_asin field
-# asin ID of the product is the same as parent_asin for user reviews and item metadata
-
-
-# Atomic File Mappings
+# atomic File Mappings
 
 ##############################################################
-# 1. meta_review_Amazon_Fashion.inter (User-item interaction)
+# 1. Amazon_Fashion.inter (User-item interaction)
 ##############################################################
 
-# From review dataset:
+# from review dataset:
 #   user_id:token -> user_id (str)
 #   parent_asin:token -> parent_asin (str)
 #   rating:float -> rating (from 1.0 to 5.0 / type float)
 #   timestamp:float -> timestamp (int)
-#   text_emb:float_seq -> text (BERT text embedding of text body of user review / type str)
+#   text_emb:float_seq -> text (BERT text embedding of user review / type str)
 
 ####################################################
-# 2. meta_review_Amazon_Fashion.user (User feature)
+# 2. Amazon_Fashion.user (User feature)
 ####################################################
 
-# From review dataset:
+# from review dataset:
 #   user_id:token -> user_id (str)
 # NOTE: No other user related features are provided in the dataset, this atomic file may not be required
 
 ####################################################
-# 3. meta_review_Amazon_Fashion.item (Item feature)
+# 3. Amazon_Fashion.item (Item feature)
 ####################################################
 
-# From meta dataset:
+# from meta dataset:
 #   parent_asin:token -> parent_asin (str)
 #   average_rating:float -> average_rating (float)
 #   rating_number:float -> rating_number (int)
 #   price:float -> price (float)
-#   description:token_seq -> description (array of sentence descriptions / type list)
-#   images_url:token -> images (.jpg URL for "large" images / only using 1 image)
-
-#  images (list)
-
+#   description_emb:float_seq -> description (array of sentence descriptions / type list)
+#   images_emb:float_seq -> images (.jpg URL for "large" images / only using 1 image)
 
 import json
 import csv
 import torch
+import requests
+import io
+
+from PIL import Image
 from transformers import BertTokenizer, BertModel
-import os
+from torchvision import transforms
+from torchvision.models import resnet50, ResNet50_Weights
 
-# Parameters
-currentDirectory = "C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project"
+# constants
+CURRENT_DIR = "C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project"
+OUTPUT_DIR = CURRENT_DIR + "/atomic_data_path/Amazon_Fashion/"
 
-amazonReviewFile = currentDirectory + "/dataset/review_Amazon_Fashion.jsonl"
-amazonMetaFile = currentDirectory + "/dataset/meta_Amazon_Fashion.jsonl"
-
-outputDir = currentDirectory + "/atomic_data_path/Amazon_Fashion"
-
-# Max amnount of text tokens we will feed to BERT
+# max amount of text tokens we will feed to BERT
 MAX_TEXT_TOKEN_LENGTH = 128
 
-# Load BERT
+# tensors are a datatype in PyTorch used to represent information such as weights and inputs
+# try to use GPU for PyTorch tensors and models, otherwise use CPU
 
-# Use GPU for tensor and model, otherwise CPU
+# CUDA Version -> 12.9 from nvidia-smi -> using 12.8 for torch
+# torch = 2.7.1+cu128
+# torchvision = 0.22.1+cu128
+
 if torch.cuda.is_available():
     device = torch.device('cuda')
 else:
     device = torch.device('cpu')
 
 # bert-base-uncased is a pretrained English model
-
-# tokenizer stays on CPU
 bertTokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-# Model is moved to device, so its weights and any new tensors it allocates live on GPU if available
+# bert model is moved to device, so its weights and any new tensors now live on GPU if available or CPU otherwise
 bertModel = BertModel.from_pretrained('bert-base-uncased').to(device)
 
-# disable dropout as it is not needed
+# set model to evaluation mode and disable dropout to prevent noise being added to embeddings when our multimodal recommender uses this data
 bertModel.eval()
 
 
-# Text Encoder - BERT
-def encodeText(text, tokenizer, model, device, maxLength = MAX_TEXT_TOKEN_LENGTH):
-    """
-    Return a torch.Tensor of shape [D]
-    If text is blank/empty, return a zero vector of appropriate size
-    """
+# return 768 dimension text embedding of float numbers using BERT
+# if text is empty, return a zero vector of size 768
+def getTextEmb(device, tokenizer, model, text, maxLength = MAX_TEXT_TOKEN_LENGTH):
 
-    # 768 dim embedding
-    D = model.config.hidden_size
+    text = text.strip()
 
-    # text is empty, so default to zero vector
-    if not text.strip():
-        return torch.zeros(D, device=device)
+    # text is empty, return zero vector of same expected dimension
+    if not text:
+
+        # model.config.hidden_size is the 768 dimension embedding
+        zeroTensor = torch.zeros(model.config.hidden_size, device=device)
+
+        zeroRes = []
+        for i in zeroTensor:
+
+            # convert zero to 6 decimal places
+            zeroRes.append(f"{i:.6f}")
+        
+        # separate embedding values with white space to conform to recbole atomic file expectations of float sequences
+        return " ".join(zeroRes)
     
-    inputs = tokenizer(
+    # prepare a tensor of input tokens for BERT model
+    formatInput = tokenizer(
         text,
         max_length = maxLength,
         padding = "max_length",
@@ -123,179 +107,212 @@ def encodeText(text, tokenizer, model, device, maxLength = MAX_TEXT_TOKEN_LENGTH
         return_tensors = "pt"
     )
 
-    # Move token tensors to the same device as the model
-    inputs = {k : v.to(device) for k, v in inputs.items()}
+    # Move token tensors to the same device as the model (GPU -- if not available then CPU)
+    inputDict = {}
 
-    # Inference on device
+    for key, val in formatInput.items():
+        inputDict[key] = val.to(device)
+
+    finalInput = {k : v.to(device) for k, v in formatInput.items()}
+
+    # disable gradient tracking in model as it is not required since we are directly generating text embeddings for our recommender
     with torch.no_grad():
-        outputs = model(**inputs)
+
+        # return a tensor of shape (batchSize, seqLen, hiddenSize)
+        res = model(**finalInput)
     
-    # Return the [CLS] embedding on that device
-    return outputs.last_hidden_state[0, 0, :].to(device)
+    # get the CLS 768 dimension text embedding and put it on our device
+    textEmb = res.last_hidden_state[0, 0, :].to(device)
 
+    textEmbRes = []
+    for i in textEmb:
 
-'''
-# 1. Build .inter file
-with open(amazonReviewFile, "r", encoding="utf-8") as fp, open(outputDir + "/Amazon_Fashion.inter", "w", newline = "", encoding="utf-8") as finter:
-    writer = csv.writer(finter, delimiter='\t')
+        # format text embedding values to 6 decimal places
+        textEmbRes.append(f"{i:.6f}")
     
-    writer.writerow([
-        "user_id:token",
-        "parent_asin:token",
-        "rating:float",
-        "timestamp:float",
-        "text_emb:float_seq"
-    ])
+    # return 768 dim text embedding as a string of values separated by white space to conform to recbole atomic file expectations of float sequence
+    return " ".join(textEmbRes)
 
-    for line in fp:
-        dataLine = json.loads(line.strip())
 
-        # Convert text review to token sequence, split with spaces
-        textEmbedding = encodeText(dataLine["text"], bertTokenizer, bertModel, device)
+# build the .inter atomic file
+def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
 
-        # print(len(textEmbedding)) -> 768
-        
-        textEmbeddingSequence = " ".join(f"{x:.6f}" for x in textEmbedding)
+    # open the dataset file and create + open the output file in the directory specified
+    with open(datasetFile, "r", encoding="utf-8") as fp, open(outputDir + outputFileName, "w", newline = "", encoding="utf-8") as finter:
+
+        # set the separator between values as tab
+        writer = csv.writer(finter, delimiter='\t')
+
+        # write the header row of the atomic file
+        writer.writerow([
+            "user_id:token",
+            "parent_asin:token",
+            "rating:float",
+            "timestamp:float",
+            "text_emb:float_seq"
+        ])
+
+        for line in fp:
+            dataLine = json.loads(line.strip())
+
+            # Convert text review to token sequence, split with spaces
+            textEmbedding = getTextEmb(device, bertTokenizer, bertModel, dataLine["text"])
+
+            writer.writerow([
+                dataLine["user_id"],
+                dataLine["parent_asin"],
+                dataLine["rating"],
+                dataLine["timestamp"],
+                textEmbedding
+            ])
+
+
+# build the .user atomic file
+def buildUserFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
+
+    with open(datasetFile, "r", encoding="utf-8") as fp, open(outputDir + outputFileName, "w", newline = "", encoding="utf-8") as fuser:
+
+        writer = csv.writer(fuser, delimiter='\t')
 
         writer.writerow([
-            dataLine["user_id"],
-            dataLine["parent_asin"],
-            dataLine["rating"],
-            dataLine["timestamp"],
-            textEmbeddingSequence
+            "user_id:token"
         ])
-'''
 
-'''
-# 2. Build .user file
-with open(amazonReviewFile, "r", encoding="utf-8") as fp, open(outputDir + "/Amazon_Fashion.user", "w", newline = "", encoding="utf-8") as fuser:
-    writer = csv.writer(fuser, delimiter='\t')
+        for line in fp: 
+            dataLine = json.loads(line.strip())
 
-    writer.writerow([
-        "user_id:token"
-    ])
-
-    for line in fp:
-        dataLine = json.loads(line.strip())
-
-        writer.writerow([
-            dataLine["user_id"]
-        ])
-'''
+            writer.writerow([
+                dataLine["user_id"]
+            ])
 
 
-# 3. Build .item file -> save images as URL from jsonl -> create custom model to process these images and convert them to image embeddings uising vit
-import requests
-from PIL import Image
-import torch
-from torchvision import transforms
-from torchvision.models import resnet50
-import io
+# setup process to get image embeddings
 
-# Use GPU for tensor and model, otherwise CPU
-if torch.cuda.is_available():
-    device = torch.device('cuda')
-else:
-    device = torch.device('cpu')
+# use resnet50 model whose weights are pretrained on the ImageNet database
+res50Model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
 
-# Give us ImageNet trained weights so our embeddings will be able to capture rich visual features
-model = resnet50(pretrained=True)
+# get the number of dimensions for the image feature embedding before the classification is done, this will usually be 2048 for resnet
+res50EmbDim = res50Model.fc.in_features
 
-# Save feature dimension before dropping the classification head -> value is usually 2048 for resnet
-resnetFeatDim = model.fc.in_features
+# remove the classification layer at the end of the model so we get the raw 2048 dimension embedding vector instead of a class score
+res50Model.fc = torch.nn.Identity()
 
-# Remove the final classification layer so the model returns the raw 2048 dimension feature vector instead of class scores
-model.fc = torch.nn.Identity()
-
+# move all the model components such as the weights and parameters to the device (preferably GPU, use CPU if this fails) and setup model in evaluation mode (turn off dropout)
 # turn off dropout since we are only doing inference (using a model to make predictions or generate output based on new, unseen data)
-model = model.to(device).eval()
+res50Model = res50Model.to(device).eval()
 
-
-# Setup ImageNet preprocessing
+# setup image preprocessing before feeding image into resnet 50 model - code below produces a 3 x 224 x 224 tensor
+# image preprocessing outline and values used, such as for mean and std are inspired from https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.quantization.resnet18.html?highlight=transforms+normalize#:~:text=weights='IMAGENET1K_FBGEMM_V1'%20.-,ResNet18_QuantizedWeights.,DEFAULT%20.&text=The%20inference%20transforms%20are%20available,0.229%2C%200.224%2C%200.225%5D%20.
+# resize -> centercrop -> rescale -> normalize using mean and std
 preprocess = transforms.Compose([
 
-    # Resize images to the same dimensions that ResNet was trained on
+    # resize and crop out the center of the image to the same dimensions that the resnet model was trained on
     transforms.Resize(256),
     transforms.CenterCrop(224),
 
-    # Convert PIL image to tensor multidimensional array
+    # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
     transforms.ToTensor(),
 
-    # Use the same values that ImageNet models expect so the activation function lands in the expected range
+    # normalize image tensor using the same values as expected from images that resnet trained on from ImageNet
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
 
 
-with open(amazonMetaFile, "r", encoding="utf-8") as fp, open(outputDir + "/Amazon_Fashion.item", "w", newline = "", encoding="utf-8") as fitem:
-    writer = csv.writer(fitem, delimiter='\t')
+# build .item file
+#   save images as URL from jsonl
+#   preprocess these images
+#   convert them to image embeddings using resnet 50
 
-    writer.writerow([
-        "parent_asin:token",
-        "average_rating:float",
-        "rating_number:float",
-        "price:float",
-        "description_emb:float_seq",
-        "images_emb:float_seq"
-    ])
-
-    for line in fp:
-        dataLine = json.loads(line.strip())
-
-        # Get description text embedding via BERT
-
-        descTokenSeq = " ".join(dataLine["description"])
-
-        # Convert text review to token sequence, split with spaces
-        descEmbedding = encodeText(descTokenSeq, bertTokenizer, bertModel, device)
-
-        # Should be 768
-        #print("Description BERT embedding length:", len(descEmbedding))
-        
-        descEmbeddingSequence = " ".join(f"{x:.6f}" for x in descEmbedding)
-
-        imageURL = ""
-
-        if dataLine["images"]:
-            if "large" in dataLine["images"][0]:
-                imageURL = dataLine["images"][0]["large"]
-
-        if imageURL:
-            try:
-                # Download with a 10 second timeout to avoid broken URLs
-                resp = requests.get(imageURL, timeout=10)
-
-                # Convert image to RGB as ResNet does not accept grayscale
-                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-
-                # Add batch dimensions - shape [1, 3, 224, 224]
-                x = preprocess(img).unsqueeze(0).to(device)
-
-                # So PyTorch does not build a gradient graph and we save memory
-                with torch.no_grad():
-                    # shape [2048]
-                    feat = model(x).squeeze(0)
-
-                # Extract a pure Python list of floats to represent the image embedding
-                imageEmb = feat.tolist()
-            except Exception:
-                # In case of any issues with the image embedding, use a zero vector
-                imageEmb = [0.0] * resnetFeatDim
-        else:
-            imageEmb = [0.0] * resnetFeatDim
-        
-        # Image embedding dimension length -> 2048
-        #print("Image ResNet embedding dimension length", len(imageEmb))
-
-        # Set the image embedding to space separated floats for the float_seq requirement in the atomic file
-        # Set the float value to 6 decimal places
-        imageEmbeddingSequence = " ".join(f"{v:.6f}" for v in imageEmb)
+def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
+    with open(datasetFile, "r", encoding="utf-8") as fp, open(outputDir + outputFileName, "w", newline = "", encoding="utf-8") as fitem:
+        writer = csv.writer(fitem, delimiter='\t')
 
         writer.writerow([
-            dataLine["parent_asin"],
-            dataLine["average_rating"],
-            dataLine["rating_number"],
-            dataLine["price"],
-            descEmbeddingSequence,
-            imageEmbeddingSequence
+            "parent_asin:token",
+            "average_rating:float",
+            "rating_number:float",
+            "price:float",
+            "description_emb:float_seq",
+            "images_emb:float_seq"
         ])
+
+        resultCounter = 1
+
+        for line in fp:
+            dataLine = json.loads(line.strip())
+
+            # description is an array of different text such as Feature and Package Including - join them into one long string for processing
+            descText = " ".join(dataLine["description"])
+
+            # get description text embedding using BERT
+            descEmb = getTextEmb(device, bertTokenizer, bertModel, descText)
+
+            imgURL = ""
+
+            # try to get the first large main image representing the item
+            if dataLine["images"]:
+                for img in dataLine["images"]:
+                    if img.get("variant") == "MAIN" and img.get("large"):
+                        imgURL = img.get("large")
+                        break
+
+            if imgURL:
+                try:
+                    # download with a 10 second timeout to avoid broken URLs
+                    imgReq = requests.get(imgURL, timeout=10)
+
+                    # convert PIL image from bytes to an RGB image as resnet50 does not accept grayscale and requires 3 channels (RGB)
+                    imgFound = Image.open(io.BytesIO(imgReq.content)).convert("RGB")
+
+                    # preprocess image found from dataset
+                    # add a batch dimension to get tensor shape as [1, 3, 224, 224] from [3, 224, 224] for resnet model 
+                    # move result tensor to GPU if available, CPU otherwise
+                    imgInput = preprocess(imgFound).unsqueeze(0).to(device)
+
+                    # we do not need to compute or track gradients as we are just calling the model to produce embeddings
+                    with torch.no_grad():
+                        # get model embedding and remove front batch dimension to go from [1, 2048] to [2048] shape using squeeze
+                        # we expect a 2048 dimension vector embedding from resnet50
+                        imgEmb = res50Model(imgInput).squeeze(0)
+
+                    # convert tensor to a list of float values
+                    imgEmb = imgEmb.tolist()
+
+                except Exception:
+                    # in case of any issues with the image embedding, use a zero vector
+                    imgEmb = [0.0] * res50EmbDim
+            else:
+                imgEmb = [0.0] * res50EmbDim
+
+            # set the image embedding to space separated floats for the float_seq requirement in the atomic file
+            imgEmbRes = []
+
+            for i in imgEmb:
+                # set the float value to 6 decimal places
+                imgEmbRes.append(f"{i:.6f}")
+            
+            imgEmbRes = " ".join(imgEmbRes)
+
+            writer.writerow([
+                dataLine["parent_asin"],
+                dataLine["average_rating"],
+                dataLine["rating_number"],
+                dataLine["price"],
+                descEmb,
+                imgEmbRes
+            ])
+            
+            resultCounter += 1
+            print("Data line", resultCounter, "has been added to the file:", outputFileName)
+
+
+if __name__ == "__main__":
+    amazonReviewFile = CURRENT_DIR + "/dataset/review_Amazon_Fashion.jsonl"
+    amazonMetaFile = CURRENT_DIR + "/dataset/meta_Amazon_Fashion.jsonl"
+
+    #buildInterFile(amazonReviewFile, "Amazon_Fashion.inter")
+
+    #buildUserFile(amazonReviewFile, "Amazon_Fashion.user")
+
+    buildItemFile(amazonMetaFile, "Amazon_Fashion.item")
