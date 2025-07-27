@@ -43,6 +43,8 @@ import torch
 import requests
 import io
 
+import encoders
+
 from PIL import Image
 from transformers import BertTokenizer, BertModel
 from torchvision import transforms
@@ -152,6 +154,8 @@ def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             "text_emb:float_seq"
         ])
 
+        resultCounter = 1
+
         for line in fp:
             dataLine = json.loads(line.strip())
 
@@ -166,6 +170,9 @@ def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
                 textEmbedding
             ])
 
+            resultCounter += 1
+            print("Data line", resultCounter, "has been added to the file:", outputFileName)
+
 
 # build the .user atomic file
 def buildUserFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
@@ -178,12 +185,17 @@ def buildUserFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             "user_id:token"
         ])
 
+        resultCounter = 1
+
         for line in fp: 
             dataLine = json.loads(line.strip())
 
             writer.writerow([
                 dataLine["user_id"]
             ])
+
+            resultCounter += 1
+            print("Data line", resultCounter, "has been added to the file:", outputFileName)
 
 
 # setup process to get image embeddings
@@ -206,7 +218,7 @@ res50Model = res50Model.to(device).eval()
 # resize -> centercrop -> rescale -> normalize using mean and std
 preprocess = transforms.Compose([
 
-    # resize and crop out the center of the image to the same dimensions that the resnet model was trained on
+    # resize and crop to the center of the image using the same dimensions that the resnet model was trained on
     transforms.Resize(256),
     transforms.CenterCrop(224),
 
