@@ -45,6 +45,10 @@ import io
 
 import encoders
 
+import time
+from datetime import datetime
+import logging
+
 from PIL import Image
 from transformers import BertModel, BertTokenizer, DistilBertModel, DistilBertTokenizer, AlbertModel, AlbertTokenizer, AutoTokenizer, AutoModel, AutoImageProcessor, AutoModelForImageClassification
 from torchvision import transforms
@@ -52,6 +56,10 @@ from torchvision.models import resnet50, ResNet50_Weights, resnet18, ResNet18_We
 
 # constants
 CURRENT_DIR = "C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project"
+
+LOGGER = logging.getLogger()
+logging.basicConfig(filename= CURRENT_DIR + "/modality-encoder-experiment-log/" + "modality-encoder-experiments-" + str(datetime.now()).replace(" ", "-").replace(".", "-").replace(":", "-") + ".log", 
+                    encoding="utf-8", level=logging.INFO)
 
 
 # build the .inter atomic file
@@ -73,12 +81,26 @@ def buildInterFile(device, datasetFile, outputFileName, outputDir, textEncoderFu
         ])
 
         resultCounter = 1
+        totalTextEmbLatencyTime = 0
+        highestGPUMem = 0
 
         for line in fp:
             dataLine = json.loads(line.strip())
 
+            # start time counter for text embedding inference
+            startTextEmbTime = time.perf_counter()
+
             # Convert text review to token sequence, split with spaces
             textEmbedding = textEncoderFunc(dataLine["text"], device, textModel, textTokenizer)
+
+            # capture end time counter of text embedding inference
+            endTextEmbTime =  time.perf_counter()
+
+            # get the time spent to get text embedding
+            totalTextEmbLatencyTime += (endTextEmbTime - startTextEmbTime)
+
+            # record the highest GPU memory used so far (in GB) if found (convert from bytes to GB)
+            highestGPUMem = max(highestGPUMem, (torch.cuda.max_memory_allocated(device) / (1024 ** 3)))
 
             writer.writerow([
                 dataLine["user_id"],
@@ -90,6 +112,24 @@ def buildInterFile(device, datasetFile, outputFileName, outputDir, textEncoderFu
 
             resultCounter += 1
             print("Data line", resultCounter, "has been added to the file:", outputFileName)
+
+            # NOTE: hard code stop after 200,000 data lines have been added to the file
+            if resultCounter >= 200001:
+                break
+        
+        LOGGER.info("#################################################################")
+        LOGGER.info(outputFileName + " Embedding Statistics:")
+        LOGGER.info("#################################################################\n")
+        
+        # -1 result counter to not count heading in result and convert to ms from seconds
+        avgTextLatency = (totalTextEmbLatencyTime / (resultCounter - 1)) * 1000
+        LOGGER.info(f"Average Text Embedding Latency Spent Per Item (ms): {avgTextLatency:.6f}")
+
+        # get total time spent to compute all embeddings (in minutes)
+        LOGGER.info(f"Total Time Spent to Perform All Text Embeddings in Dataset (minutes): {(totalTextEmbLatencyTime / 60):.6f}")
+
+        # get the highest GPU memory recorded during the text embedding process
+        LOGGER.info(f"Highest GPU Memory Recorded During Embedding Process (GB): {highestGPUMem:.6f}\n")
 
 
 # build the .user atomic file
@@ -137,6 +177,9 @@ def buildItemFile(device, datasetFile, outputFileName, outputDir, textEncoderFun
         ])
 
         resultCounter = 1
+        totalTextEmbLatencyTime = 0
+        totalImgEmbLatencyTime = 0
+        highestGPUMem = 0
 
         for line in fp:
             dataLine = json.loads(line.strip())
@@ -144,8 +187,14 @@ def buildItemFile(device, datasetFile, outputFileName, outputDir, textEncoderFun
             # description is an array of different text such as Feature and Package Including - join them into one long string for processing
             descText = " ".join(dataLine["description"])
 
+            startTextEmbTime = time.perf_counter()
+
             # get description text embedding using text encoder
             descEmb = textEncoderFunc(descText, device, textModel, textTokenizer)
+
+            endTextEmbTime =  time.perf_counter()
+
+            totalTextEmbLatencyTime += (endTextEmbTime - startTextEmbTime)
 
             imgURL = ""
 
@@ -156,11 +205,19 @@ def buildItemFile(device, datasetFile, outputFileName, outputDir, textEncoderFun
                         imgURL = img.get("large")
                         break
             
+            startImageEmbTime = time.perf_counter()
+
             # if the image encoder is ViT
             if isVit:
                 imgEmb = imgEncoderFunc(imgURL, device, imgModel, imgPreProcessor)
             else:
                 imgEmb = imgEncoderFunc(imgURL, device, imgModel, imgEmbDim, imgPreProcessor)
+            
+            endImageEmbTime = time.perf_counter()
+
+            totalImgEmbLatencyTime += (endImageEmbTime - startImageEmbTime)
+
+            highestGPUMem = max(highestGPUMem, (torch.cuda.max_memory_allocated(device) / (1024 ** 3)))
 
             writer.writerow([
                 dataLine["parent_asin"],
@@ -173,6 +230,28 @@ def buildItemFile(device, datasetFile, outputFileName, outputDir, textEncoderFun
             
             resultCounter += 1
             print("Data line", resultCounter, "has been added to the file:", outputFileName)
+
+            # NOTE: hard code stop after 100,000 data lines have been added to the file
+            if resultCounter >= 100001:
+                break
+
+        LOGGER.info("#################################################################")
+        LOGGER.info(outputFileName + " Embedding Statistics:")
+        LOGGER.info("#################################################################\n")
+        
+        # -1 result counter to not count heading in result and convert to ms from seconds
+        avgTextLatency = (totalTextEmbLatencyTime / (resultCounter - 1)) * 1000
+        LOGGER.info(f"Average Text Embedding Latency Spent Per Item (ms): {avgTextLatency:.6f}")
+
+        avgImgLatency = (totalImgEmbLatencyTime / (resultCounter - 1)) * 1000
+        LOGGER.info(f"Average Image Embedding Latency Spent Per Item (ms): {avgImgLatency:.6f}")
+
+        # get total time spent to compute all embeddings (in minutes)
+        LOGGER.info(f"Total Time Spent to Perform All Text Embeddings in Dataset (minutes): {(totalTextEmbLatencyTime / 60):.6f}")
+        LOGGER.info(f"Total Time Spent to Perform All Image Embeddings in Dataset (minutes): {(totalImgEmbLatencyTime / 60):.6f}")
+
+        # get the highest GPU memory recorded during the text embedding process
+        LOGGER.info(f"Highest GPU Memory Recorded During Embedding Process (GB): {highestGPUMem:.6f}\n")
 
 
 if __name__ == "__main__":
