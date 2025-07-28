@@ -21,19 +21,8 @@ MAX_TEXT_TOKEN_LENGTH = 128
 ########################
 
 # BERT
-def getBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
-    # 1. setup BERT
-
-    # bert model is moved to device, so its weights and any new tensors now live on GPU if available or CPU otherwise
-    bertModel = BertModel.from_pretrained("bert-base-uncased").to(device)
-
-    # set model to evaluation mode and disable dropout to prevent noise being added to embeddings when our multimodal recommender uses this data
-    bertModel.eval()
-
-    # bert-base-uncased is a pretrained English model
-    bertTokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-
-    # 2. get text embeddings
+def getBERTEmb(text, device, bertModel, bertTokenizer, maxLength=MAX_TEXT_TOKEN_LENGTH):
+    # 1. get text embeddings
 
     text = text.strip()
 
@@ -76,7 +65,7 @@ def getBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
     # get the CLS 768 dimension text embedding and put it on our device
     textEmb = res.last_hidden_state[0, 0, :].to(device)
 
-    print("Length of BERT embedding", len(textEmb))
+    #print("Length of BERT embedding", len(textEmb))
 
     textEmbRes = []
     for i in textEmb:
@@ -89,15 +78,8 @@ def getBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
 
 
 # DistilBERT
-def getDistilBertEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
-    # 1. setup DistilBERT
-    
-    distilBertModel = DistilBertModel.from_pretrained("distilbert-base-uncased").to(device)
-    distilBertModel.eval()
-
-    distilBertTokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
-
-    # 2. get text embeddings
+def getDistilBertEmb(text, device, distilBertModel, distilBertTokenizer, maxLength=MAX_TEXT_TOKEN_LENGTH):
+    # 1. get text embeddings
 
     text = text.strip()
 
@@ -130,7 +112,7 @@ def getDistilBertEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
 
     textEmb = res.last_hidden_state[0, 0, :].to(device)
 
-    print("Length of DistilBERT embedding", len(textEmb))
+    #print("Length of DistilBERT embedding", len(textEmb))
 
     textEmbRes = []
     for i in textEmb:
@@ -141,15 +123,8 @@ def getDistilBertEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
 
 
 # ALBERT
-def getALBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
-    # 1. setup ALBERT
-
-    albertModel = AlbertModel.from_pretrained("albert-base-v2").to(device)
-    albertModel.eval()
-
-    albertTokenizer = AlbertTokenizer.from_pretrained("albert-base-v2")
-
-    # 2. get text embeddings
+def getALBERTEmb(text, device, albertModel, albertTokenizer, maxLength=MAX_TEXT_TOKEN_LENGTH):
+    # 1. get text embeddings
     
     text = text.strip()
 
@@ -182,7 +157,7 @@ def getALBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
     
     textEmb = res.last_hidden_state[0, 0, :].to(device)
 
-    print("Length of ALBERT embedding", len(textEmb))
+    #print("Length of ALBERT embedding", len(textEmb))
 
     textEmbRes = []
     for i in textEmb:
@@ -193,15 +168,8 @@ def getALBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
 
 
 # TinyBERT
-def getTinyBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
-    # 1. setup TinyBERT
-
-    tinyBertModel = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)
-    tinyBertModel.eval()
-
-    tinyBertTokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-
-    # 2. get text embeddings
+def getTinyBERTEmb(text, device, tinyBertModel, tinyBertTokenizer, maxLength=MAX_TEXT_TOKEN_LENGTH):
+    # 1. get text embeddings
 
     text = text.strip()
 
@@ -234,7 +202,7 @@ def getTinyBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
     
     textEmb = res.last_hidden_state[0, 0, :].to(device)
 
-    print("Length of TinyBERT embedding", len(textEmb))
+    #print("Length of TinyBERT embedding", len(textEmb))
     
     textEmbRes = []
     for i in textEmb:
@@ -249,44 +217,8 @@ def getTinyBERTEmb(text, device, maxLength=MAX_TEXT_TOKEN_LENGTH):
 ########################
 
 # ResNet-50
-def getRes50Emb(imgURL, device):
-    # 1. setup resnet50
-
-    # use resnet50 model whose weights are pretrained on the ImageNet database
-    res50Model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-
-    # get the number of dimensions for the image feature embedding before the classification is done, this will usually be 2048 for resnet50
-    res50EmbDim = res50Model.fc.in_features
-
-    # remove the classification layer at the end of the model so we get the raw 2048 dimension embedding vector instead of a class score
-    res50Model.fc = torch.nn.Identity()
-
-    # move all the model components such as the weights and parameters to the device (preferably GPU, use CPU if this fails) and setup model in evaluation mode (turn off dropout)
-    res50Model = res50Model.to(device)
-    
-    # turn off dropout since we are only doing inference (using a model to make predictions or generate output based on new, unseen data)
-    res50Model.eval()
-
-    # 2. setup image preprocessing requirements for resnet50
-
-    # setup image preprocessing before feeding image into resnet 50 model - code below produces a 3 x 224 x 224 tensor
-    # image preprocessing outline and values used for mean and std are inspired from https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.quantization.resnet18.html?highlight=transforms+normalize#:~:text=weights='IMAGENET1K_FBGEMM_V1'%20.-,ResNet18_QuantizedWeights.,DEFAULT%20.&text=The%20inference%20transforms%20are%20available,0.229%2C%200.224%2C%200.225%5D%20.
-    # resize -> centercrop -> rescale -> normalize using mean and std
-    preprocess = transforms.Compose([
-
-        # resize and crop to the center of the image using the same dimensions that the resnet model was trained on
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-
-        # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
-        transforms.ToTensor(),
-
-        # normalize image tensor using the same values as expected from images that resnet trained on from ImageNet
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225])
-    ])
-
-    # 3. try to download the image from the URL, preprocess it and feed it into the resnet50 model - if there are any issues return a zero vector of size 2048
+def getRes50Emb(imgURL, device, res50Model, res50EmbDim, preprocess):
+    # 1. try to download the image from the URL, preprocess it and feed it into the resnet50 model - if there are any issues return a zero vector of size 2048
 
     try:
         # download with a 10 second timeout to avoid broken URLs
@@ -314,7 +246,7 @@ def getRes50Emb(imgURL, device):
         # in case of any issues with the image embedding, use a zero vector
         imgEmb = [0.0] * res50EmbDim
     
-    print("Length of ResNet50 embedding", len(imgEmb))
+    #print("Length of ResNet50 embedding", len(imgEmb))
     
     imgEmbRes = []
 
@@ -327,36 +259,9 @@ def getRes50Emb(imgURL, device):
 
 
 # ResNet-18
-def getRes18Emb(imgURL, device):
-    # 1. setup resnet18
+def getRes18Emb(imgURL, device, res18Model, res18EmbDim, preprocess):
+    # 1. try to download the image from the URL, preprocess it and feed it into the resnet18 model - if there are any issues return a zero vector
     
-    res18Model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-
-    # get the number of dimensions for the image embedding - expect 512
-    res18EmbDim = res18Model.fc.in_features
-
-    res18Model.fc = torch.nn.Identity()
-
-    res18Model = res18Model.to(device)
-    res18Model.eval()
-
-    # 2. setup image preprocessing requirements for resnet18 - same as resnet50
-
-    preprocess = transforms.Compose([
-
-        # resize and crop to the center of the image using the same dimensions that the resnet model was trained on
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-
-        # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
-        transforms.ToTensor(),
-
-        # normalize image tensor using the same values as expected from images that resnet trained on from ImageNet
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225])
-    ])
-
-    # 3. try to download the image from the URL, preprocess it and feed it into the resnet18 model - if there are any issues return a zero vector
     try:
         imgReq = requests.get(imgURL, timeout=10)
 
@@ -378,7 +283,7 @@ def getRes18Emb(imgURL, device):
         # in case of any issues with the image embedding process, use a zero vector with dimension 512
         imgEmb = [0.0] * res18EmbDim
     
-    print("Length of ResNet18 embedding", len(imgEmb))
+    #print("Length of ResNet18 embedding", len(imgEmb))
 
     imgEmbRes = []
 
@@ -390,37 +295,9 @@ def getRes18Emb(imgURL, device):
 
 
 # MobileNetV2
-def getMobileNetV2Emb(imgURL, device):
-    # 1. setup mobilenetv2
-
-    mobileNetV2Model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
-
-    # get the number of dimensions for the iamge embedding - expect 1280
-    mobileNetV2EmbDim = mobileNetV2Model.last_channel
-
-    # mobilenetv2 uses a sequential classifier instead of a linear fully connected layer like resnet at the final classification layer
-    mobileNetV2Model.classifier = torch.nn.Identity()
-
-    mobileNetV2Model = mobileNetV2Model.to(device)
-    mobileNetV2Model.eval()
-
-    # 2. setup image preprocessing requirements for mobilenetv2 - same as resnet (all trained on imagenet)
-
-    preprocess = transforms.Compose([
-
-        # resize and crop to the center of the image using the same dimensions that the mobilenetv2 model was trained on
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-
-        # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
-        transforms.ToTensor(),
-
-        # normalize image tensor using the same values as expected from images that mobilenetv2 trained on from ImageNet
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225])
-    ])
-
-    # 3. try to download the image from the URL, preprocess it and feed it into the mobilenetv2 model - if there are any issues return a zero vector
+def getMobileNetV2Emb(imgURL, device, mobileNetV2Model, mobileNetV2EmbDim, preprocess):
+    # 1. try to download the image from the URL, preprocess it and feed it into the mobilenetv2 model - if there are any issues return a zero vector
+    
     try:
         imgReq = requests.get(imgURL, timeout=10)
 
@@ -442,7 +319,7 @@ def getMobileNetV2Emb(imgURL, device):
         # in case of any issues with the image embedding process, use a zero vector with dimension 512
         imgEmb = [0.0] * mobileNetV2EmbDim
     
-    print("Length of MobileNetV2 embedding", len(imgEmb))
+    #print("Length of MobileNetV2 embedding", len(imgEmb))
 
     imgEmbRes = []
 
@@ -454,27 +331,15 @@ def getMobileNetV2Emb(imgURL, device):
 
 
 # Vit-Small (16 x 16) patches
-def getVitSmallEmb(imgURL, device):
-    # 1. setup vit-small
+def getVitSmallEmb(imgURL, device, vitSmallModel, vitPreProcess):
+    # 1. try to download the image from the URL, preprocess it and feed it into the vit-small model - if there are any issues return a zero vector
 
-    vitSmallModel = AutoModelForImageClassification.from_pretrained("WinKawaks/vit-small-patch16-224")
-
-    # remove classification layer at the end of the model so we get the raw 384 dimension embedding
-    vitSmallModel.classifier = torch.nn.Identity()
-
-    # move model to GPU if available and turn off dropout since we are just using the model to make predictions on unseen images
-    vitSmallModel = vitSmallModel.to(device)
-    vitSmallModel.eval()
-
-    # setup vit-small image processor to use optional fast image processor class instead of slow image processor class
-    preprocess = AutoImageProcessor.from_pretrained("WinKawaks/vit-small-patch16-224", use_fast=True)
-    
     try:
         imgReq = requests.get(imgURL, timeout=10)
 
         imgFound = Image.open(io.BytesIO(imgReq.content)).convert("RGB")
 
-        processImage = preprocess(
+        processImage = vitPreProcess(
             imgFound,
             return_tensors = "pt"
         )
@@ -495,7 +360,7 @@ def getVitSmallEmb(imgURL, device):
         # model.config.hidden_size should be 384 dimension embedding
         imgEmb = torch.zeros(vitSmallModel.config.hidden_size, device=device)
     
-    print("Length of Vit-Small embedding", len(imgEmb))
+    #print("Length of Vit-Small embedding", len(imgEmb))
 
     imgEmbRes = []
     for i in imgEmb:
@@ -503,51 +368,177 @@ def getVitSmallEmb(imgURL, device):
     
     # return 384 dim image embedding with white space separation between vector values to conform to recbole atomic file expectations
     return " ".join(imgEmbRes)
-
     
 
 # main
 if __name__ == "__main__":
+
+    ##############################
+    # Test device
+    ##############################
+
     if torch.cuda.is_available():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+
+    # prints "cuda" -> GPU, otherwise CPU
+    #print(device)
     
-
+    ##############################
     # Test text encoders 
+    ##############################
 
-    #res = getBERTEmb("this is a test", device)
-    #print(res)
+    # 1. setup BERT model and tokenizer then pass into function
 
-    #res = getDistilBertEmb("this is a test", device)
-    #print(res)
+    '''
+    # bert model is moved to device, so its weights and any new tensors now live on GPU if available or CPU otherwise
+    bertModel = BertModel.from_pretrained("bert-base-uncased").to(device)
 
-    #res = getALBERTEmb("this is a test", device)
-    #print(res)
+    # set model to evaluation mode and disable dropout to prevent noise being added to embeddings when our multimodal recommender uses this data
+    bertModel.eval()
 
-    #res = getTinyBERTEmb("this is a test", device)
-    #print(res)
+    # bert-base-uncased is a pretrained English model
+    bertTokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
+    res = getBERTEmb("this is a test", device, bertModel, bertTokenizer)
+    print(res)
+    '''
 
+    # 2. setup DistilBERT model and tokenizer then pass into function
+    
+    '''
+    distilBertModel = DistilBertModel.from_pretrained("distilbert-base-uncased").to(device)
+    distilBertModel.eval()
+
+    distilBertTokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+
+    res = getDistilBertEmb("this is a test", device, distilBertModel, distilBertTokenizer)
+    print(res)
+    '''
+
+    # 3. setup ALBERT model and tokenizer then pass into function
+
+    '''
+    albertModel = AlbertModel.from_pretrained("albert-base-v2").to(device)
+    albertModel.eval()
+
+    albertTokenizer = AlbertTokenizer.from_pretrained("albert-base-v2")
+
+    res = getALBERTEmb("this is a test", device, albertModel, albertTokenizer)
+    print(res)
+    '''
+
+    # 4. setup TinyBERT model and tokenizer then pass into function
+
+    '''
+    tinyBertModel = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)
+    tinyBertModel.eval()
+
+    tinyBertTokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+
+    res = getTinyBERTEmb("this is a test", device, tinyBertModel, tinyBertTokenizer)
+    print(res)
+    '''
+
+    ##############################
     # Test image encoders
+    ##############################
 
-    # from sample data row of Meta Amazon Fashion dataset - https://amazon-reviews-2023.github.io/
+    # A. from sample data row of Meta Amazon Fashion dataset - https://amazon-reviews-2023.github.io/
     testImgURL = "https://m.media-amazon.com/images/I/31dlCd7tHSL.jpg"
 
-    #res = getRes50Emb(testImgURL, device)
-    #print(res)
+    # B. setup image preprocessor for resnet50, resnet18 and mobilenetv2 models
+    
+    # setup image preprocessing before feeding image into resnet50, resnet18 and mobilenetv2 model - code below produces a 3 x 224 x 224 tensor
+    # image preprocessing outline and values used for mean and std are inspired from https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.quantization.resnet18.html?highlight=transforms+normalize#:~:text=weights='IMAGENET1K_FBGEMM_V1'%20.-,ResNet18_QuantizedWeights.,DEFAULT%20.&text=The%20inference%20transforms%20are%20available,0.229%2C%200.224%2C%200.225%5D%20.
+    # resize -> centercrop -> rescale -> normalize using mean and std
+    preprocess = transforms.Compose([
 
-    #res = getRes18Emb(testImgURL, device)
-    #print(res)
+        # resize and crop to the center of the image using the same dimensions that the resnet model was trained on
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
 
-    #res = getMobileNetV2Emb(testImgURL, device)
-    #print(res)
+        # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
+        transforms.ToTensor(),
 
-    res = getVitSmallEmb(testImgURL, device)
+        # normalize image tensor using the same values as expected from images that resnet and mobilenetv2 trained on from ImageNet
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225])
+    ])
+
+    # 1. setup resnet50 model then pass into function
+    
+    '''
+    # use resnet50 model whose weights are pretrained on the ImageNet database
+    res50Model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+
+    # get the number of dimensions for the image feature embedding before the classification is done, this will usually be 2048 for resnet50
+    res50EmbDim = res50Model.fc.in_features
+
+    # remove the classification layer at the end of the model so we get the raw 2048 dimension embedding vector instead of a class score
+    res50Model.fc = torch.nn.Identity()
+
+    # move all the model components such as the weights and parameters to the device (preferably GPU, use CPU if this fails) and setup model in evaluation mode (turn off dropout)
+    res50Model = res50Model.to(device)
+    
+    # turn off dropout since we are only doing inference (using a model to make predictions or generate output based on new, unseen data)
+    res50Model.eval()
+
+    res = getRes50Emb(testImgURL, device, res50Model, res50EmbDim, preprocess)
     print(res)
+    '''
 
+    # 2. setup resnet18 model then pass into function
 
-    # Test device
+    '''
+    res18Model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
 
-    # prints "cuda"
-    #print(device)
+    # get the number of dimensions for the image embedding - expect 512
+    res18EmbDim = res18Model.fc.in_features
+
+    res18Model.fc = torch.nn.Identity()
+
+    res18Model = res18Model.to(device)
+    res18Model.eval()
+
+    res = getRes18Emb(testImgURL, device, res18Model, res18EmbDim, preprocess)
+    print(res)
+    '''
+
+    # 3. setup mobilenetv2 model then pass into function
+
+    '''
+    mobileNetV2Model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+
+    # get the number of dimensions for the iamge embedding - expect 1280
+    mobileNetV2EmbDim = mobileNetV2Model.last_channel
+
+    # mobilenetv2 uses a sequential classifier instead of a linear fully connected layer like resnet at the final classification layer
+    mobileNetV2Model.classifier = torch.nn.Identity()
+
+    mobileNetV2Model = mobileNetV2Model.to(device)
+    mobileNetV2Model.eval()
+
+    res = getMobileNetV2Emb(testImgURL, device, mobileNetV2Model, mobileNetV2EmbDim, preprocess)
+    print(res)
+    '''
+
+    # 4. setup vit-small (16 x 16) patch model then pass into function
+
+    '''
+    vitSmallModel = AutoModelForImageClassification.from_pretrained("WinKawaks/vit-small-patch16-224")
+
+    # remove classification layer at the end of the model so we get the raw 384 dimension embedding
+    vitSmallModel.classifier = torch.nn.Identity()
+
+    # move model to GPU if available and turn off dropout since we are just using the model to make predictions on unseen images
+    vitSmallModel = vitSmallModel.to(device)
+    vitSmallModel.eval()
+
+    # setup vit-small image processor to use optional fast image processor class instead of slow image processor class
+    vitPreProcess = AutoImageProcessor.from_pretrained("WinKawaks/vit-small-patch16-224", use_fast=True)
+
+    res = getVitSmallEmb(testImgURL, device, vitSmallModel, vitPreProcess)
+    print(res)
+    '''

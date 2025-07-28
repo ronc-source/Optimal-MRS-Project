@@ -2,7 +2,7 @@
 Amazon_Fashion_Example/
 
 # ignore all files in atomic data path directory
-atomic_data_path/Amazon_Fashion
+atomic_data_path/
 
 # ignore all files in the dataset directory
 dataset/

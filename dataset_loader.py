@@ -46,98 +46,16 @@ import io
 import encoders
 
 from PIL import Image
-from transformers import BertTokenizer, BertModel
+from transformers import BertModel, BertTokenizer, DistilBertModel, DistilBertTokenizer, AlbertModel, AlbertTokenizer, AutoTokenizer, AutoModel, AutoImageProcessor, AutoModelForImageClassification
 from torchvision import transforms
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import resnet50, ResNet50_Weights, resnet18, ResNet18_Weights, mobilenet_v2, MobileNet_V2_Weights
 
 # constants
 CURRENT_DIR = "C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project"
-OUTPUT_DIR = CURRENT_DIR + "/atomic_data_path/Amazon_Fashion/"
-
-# max amount of text tokens we will feed to BERT
-MAX_TEXT_TOKEN_LENGTH = 128
-
-# tensors are a datatype in PyTorch used to represent information such as weights and inputs
-# try to use GPU for PyTorch tensors and models, otherwise use CPU
-
-# CUDA Version -> 12.9 from nvidia-smi -> using 12.8 for torch
-# torch = 2.7.1+cu128
-# torchvision = 0.22.1+cu128
-
-if torch.cuda.is_available():
-    device = torch.device('cuda')
-else:
-    device = torch.device('cpu')
-
-# bert-base-uncased is a pretrained English model
-bertTokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-
-# bert model is moved to device, so its weights and any new tensors now live on GPU if available or CPU otherwise
-bertModel = BertModel.from_pretrained('bert-base-uncased').to(device)
-
-# set model to evaluation mode and disable dropout to prevent noise being added to embeddings when our multimodal recommender uses this data
-bertModel.eval()
-
-
-# return 768 dimension text embedding of float numbers using BERT
-# if text is empty, return a zero vector of size 768
-def getTextEmb(device, tokenizer, model, text, maxLength = MAX_TEXT_TOKEN_LENGTH):
-
-    text = text.strip()
-
-    # text is empty, return zero vector of same expected dimension
-    if not text:
-
-        # model.config.hidden_size is the 768 dimension embedding
-        zeroTensor = torch.zeros(model.config.hidden_size, device=device)
-
-        zeroRes = []
-        for i in zeroTensor:
-
-            # convert zero to 6 decimal places
-            zeroRes.append(f"{i:.6f}")
-        
-        # separate embedding values with white space to conform to recbole atomic file expectations of float sequences
-        return " ".join(zeroRes)
-    
-    # prepare a tensor of input tokens for BERT model
-    formatInput = tokenizer(
-        text,
-        max_length = maxLength,
-        padding = "max_length",
-        truncation = True,
-        return_tensors = "pt"
-    )
-
-    # Move token tensors to the same device as the model (GPU -- if not available then CPU)
-    inputDict = {}
-
-    for key, val in formatInput.items():
-        inputDict[key] = val.to(device)
-
-    finalInput = {k : v.to(device) for k, v in formatInput.items()}
-
-    # disable gradient tracking in model as it is not required since we are directly generating text embeddings for our recommender
-    with torch.no_grad():
-
-        # return a tensor of shape (batchSize, seqLen, hiddenSize)
-        res = model(**finalInput)
-    
-    # get the CLS 768 dimension text embedding and put it on our device
-    textEmb = res.last_hidden_state[0, 0, :].to(device)
-
-    textEmbRes = []
-    for i in textEmb:
-
-        # format text embedding values to 6 decimal places
-        textEmbRes.append(f"{i:.6f}")
-    
-    # return 768 dim text embedding as a string of values separated by white space to conform to recbole atomic file expectations of float sequence
-    return " ".join(textEmbRes)
 
 
 # build the .inter atomic file
-def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
+def buildInterFile(device, datasetFile, outputFileName, outputDir, textEncoderFunc, textModel, textTokenizer, textEmbColName):
 
     # open the dataset file and create + open the output file in the directory specified
     with open(datasetFile, "r", encoding="utf-8") as fp, open(outputDir + outputFileName, "w", newline = "", encoding="utf-8") as finter:
@@ -151,7 +69,7 @@ def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             "parent_asin:token",
             "rating:float",
             "timestamp:float",
-            "text_emb:float_seq"
+            textEmbColName + ":float_seq"
         ])
 
         resultCounter = 1
@@ -160,7 +78,7 @@ def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             dataLine = json.loads(line.strip())
 
             # Convert text review to token sequence, split with spaces
-            textEmbedding = getTextEmb(device, bertTokenizer, bertModel, dataLine["text"])
+            textEmbedding = textEncoderFunc(dataLine["text"], device, textModel, textTokenizer)
 
             writer.writerow([
                 dataLine["user_id"],
@@ -175,7 +93,7 @@ def buildInterFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
 
 
 # build the .user atomic file
-def buildUserFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
+def buildUserFile(datasetFile, outputFileName, outputDir):
 
     with open(datasetFile, "r", encoding="utf-8") as fp, open(outputDir + outputFileName, "w", newline = "", encoding="utf-8") as fuser:
 
@@ -198,45 +116,14 @@ def buildUserFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             print("Data line", resultCounter, "has been added to the file:", outputFileName)
 
 
-# setup process to get image embeddings
-
-# use resnet50 model whose weights are pretrained on the ImageNet database
-res50Model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-
-# get the number of dimensions for the image feature embedding before the classification is done, this will usually be 2048 for resnet
-res50EmbDim = res50Model.fc.in_features
-
-# remove the classification layer at the end of the model so we get the raw 2048 dimension embedding vector instead of a class score
-res50Model.fc = torch.nn.Identity()
-
-# move all the model components such as the weights and parameters to the device (preferably GPU, use CPU if this fails) and setup model in evaluation mode (turn off dropout)
-# turn off dropout since we are only doing inference (using a model to make predictions or generate output based on new, unseen data)
-res50Model = res50Model.to(device).eval()
-
-# setup image preprocessing before feeding image into resnet 50 model - code below produces a 3 x 224 x 224 tensor
-# image preprocessing outline and values used, such as for mean and std are inspired from https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.quantization.resnet18.html?highlight=transforms+normalize#:~:text=weights='IMAGENET1K_FBGEMM_V1'%20.-,ResNet18_QuantizedWeights.,DEFAULT%20.&text=The%20inference%20transforms%20are%20available,0.229%2C%200.224%2C%200.225%5D%20.
-# resize -> centercrop -> rescale -> normalize using mean and std
-preprocess = transforms.Compose([
-
-    # resize and crop to the center of the image using the same dimensions that the resnet model was trained on
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-
-    # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
-    transforms.ToTensor(),
-
-    # normalize image tensor using the same values as expected from images that resnet trained on from ImageNet
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])
-
-
 # build .item file
 #   save images as URL from jsonl
 #   preprocess these images
 #   convert them to image embeddings using resnet 50
 
-def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
+def buildItemFile(device, datasetFile, outputFileName, outputDir, textEncoderFunc, textModel, textTokenizer, textEmbColName,
+                  imgEncoderFunc, imgModel, imgEmbDim, imgPreProcessor, imgEmbColName, isVit):
+    
     with open(datasetFile, "r", encoding="utf-8") as fp, open(outputDir + outputFileName, "w", newline = "", encoding="utf-8") as fitem:
         writer = csv.writer(fitem, delimiter='\t')
 
@@ -245,8 +132,8 @@ def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             "average_rating:float",
             "rating_number:float",
             "price:float",
-            "description_emb:float_seq",
-            "images_emb:float_seq"
+            textEmbColName + ":float_seq",
+            imgEmbColName + ":float_seq"
         ])
 
         resultCounter = 1
@@ -257,8 +144,8 @@ def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
             # description is an array of different text such as Feature and Package Including - join them into one long string for processing
             descText = " ".join(dataLine["description"])
 
-            # get description text embedding using BERT
-            descEmb = getTextEmb(device, bertTokenizer, bertModel, descText)
+            # get description text embedding using text encoder
+            descEmb = textEncoderFunc(descText, device, textModel, textTokenizer)
 
             imgURL = ""
 
@@ -268,43 +155,12 @@ def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
                     if img.get("variant") == "MAIN" and img.get("large"):
                         imgURL = img.get("large")
                         break
-
-            if imgURL:
-                try:
-                    # download with a 10 second timeout to avoid broken URLs
-                    imgReq = requests.get(imgURL, timeout=10)
-
-                    # convert PIL image from bytes to an RGB image as resnet50 does not accept grayscale and requires 3 channels (RGB)
-                    imgFound = Image.open(io.BytesIO(imgReq.content)).convert("RGB")
-
-                    # preprocess image found from dataset
-                    # add a batch dimension to get tensor shape as [1, 3, 224, 224] from [3, 224, 224] for resnet model 
-                    # move result tensor to GPU if available, CPU otherwise
-                    imgInput = preprocess(imgFound).unsqueeze(0).to(device)
-
-                    # we do not need to compute or track gradients as we are just calling the model to produce embeddings
-                    with torch.no_grad():
-                        # get model embedding and remove front batch dimension to go from [1, 2048] to [2048] shape using squeeze
-                        # we expect a 2048 dimension vector embedding from resnet50
-                        imgEmb = res50Model(imgInput).squeeze(0)
-
-                    # convert tensor to a list of float values
-                    imgEmb = imgEmb.tolist()
-
-                except Exception:
-                    # in case of any issues with the image embedding, use a zero vector
-                    imgEmb = [0.0] * res50EmbDim
-            else:
-                imgEmb = [0.0] * res50EmbDim
-
-            # set the image embedding to space separated floats for the float_seq requirement in the atomic file
-            imgEmbRes = []
-
-            for i in imgEmb:
-                # set the float value to 6 decimal places
-                imgEmbRes.append(f"{i:.6f}")
             
-            imgEmbRes = " ".join(imgEmbRes)
+            # if the image encoder is ViT
+            if isVit:
+                imgEmb = imgEncoderFunc(imgURL, device, imgModel, imgPreProcessor)
+            else:
+                imgEmb = imgEncoderFunc(imgURL, device, imgModel, imgEmbDim, imgPreProcessor)
 
             writer.writerow([
                 dataLine["parent_asin"],
@@ -312,7 +168,7 @@ def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
                 dataLine["rating_number"],
                 dataLine["price"],
                 descEmb,
-                imgEmbRes
+                imgEmb
             ])
             
             resultCounter += 1
@@ -320,11 +176,267 @@ def buildItemFile(datasetFile, outputFileName, outputDir=OUTPUT_DIR):
 
 
 if __name__ == "__main__":
+    # tensors are a datatype in PyTorch used to represent information such as weights and inputs
+    # try to use GPU for PyTorch tensors and models, otherwise use CPU
+
+    # CUDA Version -> 12.9 from nvidia-smi -> using 12.8 for torch
+    # torch = 2.7.1+cu128
+    # torchvision = 0.22.1+cu128
+
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+
     amazonReviewFile = CURRENT_DIR + "/dataset/review_Amazon_Fashion.jsonl"
     amazonMetaFile = CURRENT_DIR + "/dataset/meta_Amazon_Fashion.jsonl"
+    
+    ##################################
+    # dataset output directories
+    ##################################
+
+    BERT_RES50_OutputDir = CURRENT_DIR + "/atomic_data_path/BERT_RES50_Amazon_Fashion/"
+    BERT_RES18_OutputDir = CURRENT_DIR + "/atomic_data_path/BERT_RES18_Amazon_Fashion/"
+    BERT_MOBILENETV2_OutputDir = CURRENT_DIR + "/atomic_data_path/BERT_MOBILENETV2_Amazon_Fashion/"
+    BERT_VITSMALL_OutputDir = CURRENT_DIR + "/atomic_data_path/BERT_VITSMALL_Amazon_Fashion/"
+
+
+    DistilBERT_RES50_OutputDir = CURRENT_DIR + "/atomic_data_path/DistilBERT_RES50_Amazon_Fashion/"
+    DistilBERT_RES18_OutputDir = CURRENT_DIR + "/atomic_data_path/DistilBERT_RES18_Amazon_Fashion/"
+    DistilBERT_MOBILENETV2_OutputDir = CURRENT_DIR + "/atomic_data_path/DistilBERT_MOBILENETV2_Amazon_Fashion/"
+    DistilBERT_VITSMALL_OutputDir = CURRENT_DIR + "/atomic_data_path/DistilBERT_VITSMALL_Amazon_Fashion/"
+
+
+    ALBERT_RES50_OutputDir = CURRENT_DIR + "/atomic_data_path/ALBERT_RES50_Amazon_Fashion/"
+    ALBERT_RES18_OutputDir = CURRENT_DIR + "/atomic_data_path/ALBERT_RES18_Amazon_Fashion/"
+    ALBERT_MOBILENETV2_OutputDir = CURRENT_DIR + "/atomic_data_path/ALBERT_MOBILENETV2_Amazon_Fashion/"
+    ALBERT_VITSMALL_OutputDir = CURRENT_DIR + "/atomic_data_path/ALBERT_VITSMALL_Amazon_Fashion/"
+
+
+    TinyBERT_RES50_OutputDir = CURRENT_DIR + "/atomic_data_path/TinyBERT_RES50_Amazon_Fashion/"
+    TinyBERT_RES18_OutputDir = CURRENT_DIR + "/atomic_data_path/TinyBERT_RES18_Amazon_Fashion/"
+    TinyBERT_MOBILENETV2_OutputDir = CURRENT_DIR + "/atomic_data_path/TinyBERT_MOBILENETV2_Amazon_Fashion/"
+    TinyBERT_VITSMALL_OutputDir = CURRENT_DIR + "/atomic_data_path/TinyBERT_VITSMALL_Amazon_Fashion/"
+
+
+    ##################################
+    # BERT .inter
+    ##################################
+
+    # setup BERT model and tokenizer
+    bertModel = BertModel.from_pretrained("bert-base-uncased").to(device)
+
+    # set model to evaluation mode and disable dropout to prevent noise being added to embeddings when our multimodal recommender uses this data
+    bertModel.eval()
+
+    # bert-base-uncased is a pretrained English model
+    bertTokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+    #buildInterFile(device, amazonReviewFile, "BERT_RES50_Amazon_Fashion.inter", BERT_RES50_OutputDir,
+    #               encoders.getBERTEmb, bertModel, bertTokenizer, "text_BERT_emb")
+
+
+    ##################################
+    # DistilBERT .inter
+    ##################################
+
+    distilBertModel = DistilBertModel.from_pretrained("distilbert-base-uncased").to(device)
+    distilBertModel.eval()
+
+    distilBertTokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+
+    #buildInterFile(device, amazonReviewFile, "DistilBERT_RES50_Amazon_Fashion.inter", DistilBERT_RES50_OutputDir,
+    #               encoders.getDistilBertEmb, distilBertModel, distilBertTokenizer, "text_DistilBERT_emb")
+
+
+    ##################################
+    # ALBERT .inter
+    ##################################
+
+    albertModel = AlbertModel.from_pretrained("albert-base-v2").to(device)
+    albertModel.eval()
+
+    albertTokenizer = AlbertTokenizer.from_pretrained("albert-base-v2")
+
+    #buildInterFile(device, amazonReviewFile, "ALBERT_RES50_Amazon_Fashion.inter", ALBERT_RES50_OutputDir,
+    #               encoders.getALBERTEmb, albertModel, albertTokenizer, "text_ALBERT_emb")
+
+
+    ##################################
+    # TinyBERT .inter
+    ##################################
+
+    tinyBertModel = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)
+    tinyBertModel.eval()
+
+    tinyBertTokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+
+    #buildInterFile(device, amazonReviewFile, "TinyBERT_RES50_Amazon_Fashion.inter", TinyBERT_RES50_OutputDir,
+    #               encoders.getTinyBERTEmb, tinyBertModel, tinyBertTokenizer, "text_TinyBERT_emb")
+    
+
+    ##################################
+    # Global .user
+    ##################################
+
+    #buildUserFile(amazonReviewFile, "BERT_RES50_Amazon_Fashion.user", BERT_RES50_OutputDir)
+
+
+    ############################################################### 
+    # BERT, DistilBERT, ALBERT and TinyBERT + ResNet50 .item
+    ###############################################################
+    
+    # setup image preprocessing before feeding image into resnet50, resnet18 and mobilenetv2 model - code below produces a 3 x 224 x 224 tensor
+    # image preprocessing outline and values used for mean and std are inspired from https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.quantization.resnet18.html?highlight=transforms+normalize#:~:text=weights='IMAGENET1K_FBGEMM_V1'%20.-,ResNet18_QuantizedWeights.,DEFAULT%20.&text=The%20inference%20transforms%20are%20available,0.229%2C%200.224%2C%200.225%5D%20.
+    # resize -> centercrop -> rescale -> normalize using mean and std
+    preprocess = transforms.Compose([
+
+        # resize and crop to the center of the image using the same dimensions that the resnet model was trained on
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+
+        # convert our PIL image to a tensor multidimensional array and rescale values to [0.0, 1.0] before normalization (as expected from docs)
+        transforms.ToTensor(),
+
+        # normalize image tensor using the same values as expected from images that resnet and mobilenetv2 trained on from ImageNet
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225])
+    ])
+
+    # use resnet50 model whose weights are pretrained on the ImageNet database
+    res50Model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+
+    # get the number of dimensions for the image feature embedding before the classification is done, this will usually be 2048 for resnet50
+    res50EmbDim = res50Model.fc.in_features
+
+    # remove the classification layer at the end of the model so we get the raw 2048 dimension embedding vector instead of a class score
+    res50Model.fc = torch.nn.Identity()
+
+    # move all the model components such as the weights and parameters to the device (preferably GPU, use CPU if this fails) and setup model in evaluation mode (turn off dropout)
+    res50Model = res50Model.to(device)
+    
+    # turn off dropout since we are only doing inference (using a model to make predictions or generate output based on new, unseen data)
+    res50Model.eval()
+
+    # BERT + RESNET50
+    #buildItemFile(device, amazonMetaFile, "BERT_RES50_Amazon_Fashion.item", BERT_RES50_OutputDir, encoders.getBERTEmb, bertModel, bertTokenizer, "desc_BERT_emb", 
+    #              encoders.getRes50Emb, res50Model, res50EmbDim, preprocess, "img_RES50_emb", False)
+    
+    # DistilBERT + RESNET50
+    #buildItemFile(device, amazonMetaFile, "DistilBERT_RES50_Amazon_Fashion.item", DistilBERT_RES50_OutputDir, encoders.getDistilBertEmb, distilBertModel, distilBertTokenizer, "desc_DistilBERT_emb", 
+    #              encoders.getRes50Emb, res50Model, res50EmbDim, preprocess, "img_RES50_emb", False)
+
+    # ALBERT + RESNET50
+    #buildItemFile(device, amazonMetaFile, "ALBERT_RES50_Amazon_Fashion.item", ALBERT_RES50_OutputDir, encoders.getALBERTEmb, albertModel, albertTokenizer, "desc_ALBERT_emb", 
+    #              encoders.getRes50Emb, res50Model, res50EmbDim, preprocess, "img_RES50_emb", False)
+
+    # TinyBERT + RESNET50
+    #buildItemFile(device, amazonMetaFile, "TinyBERT_RES50_Amazon_Fashion.item", TinyBERT_RES50_OutputDir, encoders.getTinyBERTEmb, tinyBertModel, tinyBertTokenizer, "desc_TinyBERT_emb", 
+    #              encoders.getRes50Emb, res50Model, res50EmbDim, preprocess, "img_RES50_emb", False)
+
+
+    ############################################################### 
+    # BERT, DistilBERT, ALBERT and TinyBERT + ResNet18 .item
+    ###############################################################
+
+    res18Model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+
+    # get the number of dimensions for the image embedding - expect 512
+    res18EmbDim = res18Model.fc.in_features
+
+    res18Model.fc = torch.nn.Identity()
+
+    res18Model = res18Model.to(device)
+    res18Model.eval()
+
+    # BERT + RESNET18
+    #buildItemFile(device, amazonMetaFile, "BERT_RES18_Amazon_Fashion.item", BERT_RES18_OutputDir, encoders.getBERTEmb, bertModel, bertTokenizer, "desc_BERT_emb", 
+    #              encoders.getRes18Emb, res18Model, res18EmbDim, preprocess, "img_RES18_emb", False)
+
+    # DistilBERT + RESNET18
+    #buildItemFile(device, amazonMetaFile, "DistilBERT_RES18_Amazon_Fashion.item", DistilBERT_RES18_OutputDir, encoders.getDistilBertEmb, distilBertModel, distilBertTokenizer, "desc_DistilBERT_emb", 
+    #              encoders.getRes18Emb, res18Model, res18EmbDim, preprocess, "img_RES18_emb", False)
+
+    # ALBERT + RESNET18
+    #buildItemFile(device, amazonMetaFile, "ALBERT_RES18_Amazon_Fashion.item", ALBERT_RES18_OutputDir, encoders.getALBERTEmb, albertModel, albertTokenizer, "desc_ALBERT_emb", 
+    #              encoders.getRes18Emb, res18Model, res18EmbDim, preprocess, "img_RES18_emb", False)
+
+    # TinyBERT + RESNET18
+    #buildItemFile(device, amazonMetaFile, "TinyBERT_RES18_Amazon_Fashion.item", TinyBERT_RES18_OutputDir, encoders.getTinyBERTEmb, tinyBertModel, tinyBertTokenizer, "desc_TinyBERT_emb", 
+    #              encoders.getRes18Emb, res18Model, res18EmbDim, preprocess, "img_RES18_emb", False)
+
+
+    ############################################################### 
+    # BERT, DistilBERT, ALBERT and TinyBERT + MobileNetV2 .item
+    ###############################################################
+
+    mobileNetV2Model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+
+    # get the number of dimensions for the iamge embedding - expect 1280
+    mobileNetV2EmbDim = mobileNetV2Model.last_channel
+
+    # mobilenetv2 uses a sequential classifier instead of a linear fully connected layer like resnet at the final classification layer
+    mobileNetV2Model.classifier = torch.nn.Identity()
+
+    mobileNetV2Model = mobileNetV2Model.to(device)
+    mobileNetV2Model.eval()
+
+    # BERT + MOBILENETV2
+    #buildItemFile(device, amazonMetaFile, "BERT_MOBILENETV2_Amazon_Fashion.item", BERT_MOBILENETV2_OutputDir, encoders.getBERTEmb, bertModel, bertTokenizer, "desc_BERT_emb", 
+    #              encoders.getMobileNetV2Emb, mobileNetV2Model, mobileNetV2EmbDim, preprocess, "img_MOBILENETV2_emb", False)
+
+    # DistilBERT + MOBILENETV2
+    #buildItemFile(device, amazonMetaFile, "DistilBERT_MOBILENETV2_Amazon_Fashion.item", DistilBERT_MOBILENETV2_OutputDir, encoders.getDistilBertEmb, distilBertModel, distilBertTokenizer, "desc_DistilBERT_emb", 
+    #              encoders.getMobileNetV2Emb, mobileNetV2Model, mobileNetV2EmbDim, preprocess, "img_MOBILENETV2_emb", False)
+
+    # ALBERT + MOBILENETV2
+    #buildItemFile(device, amazonMetaFile, "ALBERT_MOBILENETV2_Amazon_Fashion.item", ALBERT_MOBILENETV2_OutputDir, encoders.getALBERTEmb, albertModel, albertTokenizer, "desc_ALBERT_emb", 
+    #              encoders.getMobileNetV2Emb, mobileNetV2Model, mobileNetV2EmbDim, preprocess, "img_MOBILENETV2_emb", False)
+
+    # TinyBERT + MOBILENETV2
+    #buildItemFile(device, amazonMetaFile, "TinyBERT_MOBILENETV2_Amazon_Fashion.item", TinyBERT_MOBILENETV2_OutputDir, encoders.getTinyBERTEmb, tinyBertModel, tinyBertTokenizer, "desc_TinyBERT_emb", 
+    #              encoders.getMobileNetV2Emb, mobileNetV2Model, mobileNetV2EmbDim, preprocess, "img_MOBILENETV2_emb", False)
+
+    
+    ############################################################### 
+    # BERT, DistilBERT, ALBERT and TinyBERT + ViT-Small (16) .item
+    ###############################################################
+
+    vitSmallModel = AutoModelForImageClassification.from_pretrained("WinKawaks/vit-small-patch16-224")
+
+    # remove classification layer at the end of the model so we get the raw 384 dimension embedding
+    vitSmallModel.classifier = torch.nn.Identity()
+
+    # move model to GPU if available and turn off dropout since we are just using the model to make predictions on unseen images
+    vitSmallModel = vitSmallModel.to(device)
+    vitSmallModel.eval()
+
+    # setup vit-small image processor to use optional fast image processor class instead of slow image processor class
+    vitPreProcess = AutoImageProcessor.from_pretrained("WinKawaks/vit-small-patch16-224", use_fast=True)
+
+    # BERT + VITSMALL
+    #buildItemFile(device, amazonMetaFile, "BERT_VITSMALL_Amazon_Fashion.item", BERT_VITSMALL_OutputDir, encoders.getBERTEmb, bertModel, bertTokenizer, "desc_BERT_emb", 
+    #              encoders.getVitSmallEmb, vitSmallModel, None, vitPreProcess, "img_VITSMALL_emb", True)
+
+    # DistilBERT + VITSMALL
+    #buildItemFile(device, amazonMetaFile, "DistilBERT_VITSMALL_Amazon_Fashion.item", DistilBERT_VITSMALL_OutputDir, encoders.getDistilBertEmb, distilBertModel, distilBertTokenizer, "desc_DistilBERT_emb", 
+    #              encoders.getVitSmallEmb, vitSmallModel, None, vitPreProcess, "img_VITSMALL_emb", True)
+
+    # ALBERT + VITSMALL
+    #buildItemFile(device, amazonMetaFile, "ALBERT_VITSMALL_Amazon_Fashion.item", ALBERT_VITSMALL_OutputDir, encoders.getALBERTEmb, albertModel, albertTokenizer, "desc_ALBERT_emb", 
+    #              encoders.getVitSmallEmb, vitSmallModel, None, vitPreProcess, "img_VITSMALL_emb", True)
+
+    # TinyBERT + VITSMALL
+    #buildItemFile(device, amazonMetaFile, "TinyBERT_VITSMALL_Amazon_Fashion.item", TinyBERT_VITSMALL_OutputDir, encoders.getTinyBERTEmb, tinyBertModel, tinyBertTokenizer, "desc_TinyBERT_emb", 
+    #              encoders.getVitSmallEmb, vitSmallModel, None, vitPreProcess, "img_VITSMALL_emb", True)
+
+
+    ############################################################### 
+    # Old Function Test Cases - No longer functional
+    ###############################################################
 
     #buildInterFile(amazonReviewFile, "Amazon_Fashion.inter")
 
     #buildUserFile(amazonReviewFile, "Amazon_Fashion.user")
 
-    buildItemFile(amazonMetaFile, "Amazon_Fashion.item")
+    #buildItemFile(amazonMetaFile, "Amazon_Fashion.item")
