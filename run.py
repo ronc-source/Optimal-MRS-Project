@@ -19,12 +19,16 @@ from recbole.data import create_dataset, data_preparation
 from recbole.trainer import Trainer
 from recbole.model.context_aware_recommender import FM
 
+# custom model
+from recbole.model.custom_recommender.gatedsumfusion import GatedSumFusion
 
 
+# based on recbole official docs for running a custom model https://recbole.io/docs/developer_guide/customize_models.html
 if __name__ == "__main__":
     # load configuration with FM model with Amazon_Fashion dataset
     config = Config(
-        config_file_list=['C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/configs/Amazon_Fashion.yaml']
+        model=GatedSumFusion,
+        config_file_list=['C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/configs/BERT_RES50_Amazon_Fashion.yaml']
     )
 
     # initailize reproducibility parameters from config file
@@ -43,7 +47,10 @@ if __name__ == "__main__":
     train_data, valid_data, test_data = data_preparation(config, dataset)
 
     # initialize the baseline FM model with the config file and training data - also move to GPU device or CPU if this is not available
-    baselineModel = FM(config, train_data.dataset).to(config['device'])
+
+    #baselineModel = FM(config, train_data.dataset).to(config['device'])
+
+    baselineModel = GatedSumFusion(config, train_data.dataset).to(config['device'])
 
     # setup the trainer for the baseline model
     trainer = Trainer(config, baselineModel)
@@ -58,5 +65,3 @@ if __name__ == "__main__":
 
     # log result of model against unseen test data
     logger.info(f"Test result for our model: {testResult}")
-
-

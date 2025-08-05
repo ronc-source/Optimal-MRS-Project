@@ -1,0 +1,51 @@
+# atomic files
+data_path: C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/atomic_data_path
+dataset: Amazon_Fashion
+
+# dataset config
+USER_ID_FIELD: user_id
+ITEM_ID_FIELD: parent_asin
+
+INTERACTION_FEATURE_FIELDS: [text_emb]
+USER_FEATURE_FIELDS: []
+ITEM_FEATURE_FIELDS: [description_emb, images_emb]
+
+load_col:
+  inter:  [user_id, parent_asin, rating, timestamp, text_emb]
+  user:   [user_id]
+  item:   [parent_asin, average_rating, rating_number, price, description_emb, images_emb]
+
+field_separator: "\t"
+seq_separator: " "
+
+# set rating threshold >= 4 as positive interaction (label = 1) and anything else as negative interaction (label = 0)
+threshold:
+  rating: 4
+
+# use the default negative-sampling from recbole at a rate of 1 negative per positive
+train_neg_sample_args: {}
+
+# set name of label column as 'label' for recbole
+LABEL_FIELD: label
+
+model: FM
+embedding_size: 64
+loss_type: BPRLoss
+train_batch_size: 1024
+eval_batch_size: 1024
+epochs: 35
+
+metrics: [Recall, MRR, NDCG, GAUC]
+
+# pick this metric with @K for best model selection
+valid_metric: NDCG@10
+
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  group_by: user
+  order: RO
+
+# add reproducibility for model experiments ran
+seed: 42
+reproducibility: True
+

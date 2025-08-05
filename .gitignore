@@ -20,6 +20,7 @@ __pycache__/
 log/
 log_tensorboard/
 saved/
+modality-encoder-experiment-log/
 
 # ignore smoke test
 smoke_test.py
