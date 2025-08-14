@@ -20,14 +20,15 @@ from recbole.trainer import Trainer
 from recbole.model.context_aware_recommender import FM
 
 # custom model
-from recbole.model.custom_recommender.gatedsumfusion import GatedSumFusion
+#from recbole.model.custom_recommender.gatedsumfusion import GatedSumFusion
+from recbole.model.custom_recommender.finegrainedfusion import FineGrainedFusion
 
 
 # based on recbole official docs for running a custom model https://recbole.io/docs/developer_guide/customize_models.html
 if __name__ == "__main__":
     # load configuration with FM model with Amazon_Fashion dataset
     config = Config(
-        model=GatedSumFusion,
+        model=FineGrainedFusion,
         config_file_list=['C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/configs/BERT_RES50_Amazon_Fashion.yaml']
     )
 
@@ -50,7 +51,7 @@ if __name__ == "__main__":
 
     #baselineModel = FM(config, train_data.dataset).to(config['device'])
 
-    baselineModel = GatedSumFusion(config, train_data.dataset).to(config['device'])
+    baselineModel = FineGrainedFusion(config, train_data.dataset).to(config['device'])
 
     # setup the trainer for the baseline model
     trainer = Trainer(config, baselineModel)

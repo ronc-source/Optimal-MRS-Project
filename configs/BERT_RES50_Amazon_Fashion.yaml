@@ -23,6 +23,9 @@ load_col:
   user:   [user_id]
   item:   [parent_asin, average_rating, rating_number, price, desc_BERT_emb, img_RES50_emb]
 
+# normalize time stamp due to its large value that is overriding the important signals from other features during fusion
+normalize_field: [timestamp]
+
 field_separator: "\t"
 seq_separator: " "
 
@@ -44,6 +47,9 @@ eval_batch_size: 1024
 epochs: 35
 
 metrics: [Recall, MRR, NDCG, GAUC]
+
+learner: adam
+learning_rate: 0.001
 
 # pick this metric with @K for best model selection
 valid_metric: NDCG@10
