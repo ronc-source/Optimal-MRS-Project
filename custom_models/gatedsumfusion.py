@@ -7,6 +7,15 @@ from recbole.model.init import xavier_normal_initialization
 from recbole.model.abstract_recommender import ContextRecommender
 
 # NOTE:
+# the following gated-sum fusion model implementation is inspired and adapted from the following paper:
+
+'''
+Liu, S., Zhang, Y., Li, X., Liu, Y., Feng, C., & Yang, H. (2025). Gated Multimodal Graph
+Learning for Personalized Recommendation (arXiv:2506.00107). arXiv.
+https://doi.org/10.48550/arXiv.2506.00107
+
+'''
+
 # gated sum fusion is only performed on text and image modality encoder embeddings
 # all other features such as average_rating can be projected and concatenated without a gate
 class GatedSumFusion(ContextRecommender):

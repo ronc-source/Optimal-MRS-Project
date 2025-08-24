@@ -7,6 +7,16 @@ from recbole.model.init import xavier_normal_initialization
 from recbole.model.abstract_recommender import ContextRecommender
 import torch.nn.functional
 
+# NOTE:
+# the following fine-grained attention fusion model implementation is inspired and adapted from the following paper:
+
+'''
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., &
+Polosukhin, I. (2023). Attention Is All You Need (arXiv:1706.03762). arXiv.
+https://doi.org/10.48550/arXiv.1706.03762
+
+'''
+
 class FineGrainedFusion(ContextRecommender):
 
     input_type = InputType.PAIRWISE
