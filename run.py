@@ -1,11 +1,9 @@
 from logging import getLogger
-
 import time
 
 # override PyTorch 2.6+ safety flag by forcing weights_only=False - will not affect model accuracy just remove security for checkpoints
 import torch, functools
 torch.load = functools.partial(torch.load, weights_only=False)
-
 
 from recbole.utils import init_seed, init_logger
 from recbole.config import Config
@@ -23,7 +21,7 @@ from recbole.model.context_aware_recommender import FiGNN
 from recbole.model.custom_recommender.gatedsumfusion import GatedSumFusion
 from recbole.model.custom_recommender.finegrainedfusion import FineGrainedFusion
 
-# setup main function based on recbole official docs for running a custom model https://recbole.io/docs/developer_guide/customize_models.html
+# setup main function based on RecBole official docs for running a custom model https://recbole.io/docs/developer_guide/customize_models.html
 if __name__ == "__main__":
 
     # load configuration settings with declared model and reference to .YAML config file
@@ -43,30 +41,6 @@ if __name__ == "__main__":
     # read in the data from the atomic files along with config specifications and display this data in the logs
     dataset = create_dataset(config)
 
-    #print("TEST DATASET")
-    #memb = dataset.item_feat['img_MOBILENETV2_emb']
-    # memb is an array of 100001 sequences—one per item.
-    #lengths = [len(x) for x in memb]  
-
-    #print("Number of items:", len(memb))
-    #print("First 5 sequence lengths:", lengths[:5])
-    #print("Max sequence length:", max(lengths))
-    #print("Min sequence length:", min(lengths))
-    #print("Unique lengths in first 100 items:", sorted(set(lengths[:100])))
-    #print("All fields:", dataset.fields())
-    # note: no () after float_like_fields
-    #print("Dense (float) fields:", dataset.float_like_fields)
-    # show the types that RecBole inferred for just your embed columns
-    #print({
-    #    k: dataset.field2type[k]
-    #    for k in ['text_BERT_emb','desc_BERT_emb','img_RES50_emb']
-    #})
-
-    #print("TEST DATASET 2")
-    #img_embs = dataset.item_feat['img_RES50_emb']  # or whatever your field is called
-    #print("First item emb[0][:5]:", img_embs[0][:5])
-    #print("Second item emb[1][:5]:", img_embs[1][:5])
-
     logger.info(dataset)
 
     # split data into training, validation and test datasets based on config file specifications
@@ -75,11 +49,6 @@ if __name__ == "__main__":
     # NOTE:
     # there are a total of 38,730 positive interactions registered from 2,035,491 users, 100,001 items and an initial .inter file of 200,001
     # the rest of the information provided from the atomic files will be used for negative sampling against each of the positive interactions in train and eval stages
-
-    #print("LENGTH OF TRAINING DATASET:", len(train_data.dataset)) # 34,781
-    #print("LENGTH OF VALIDATION DATASET:", len(valid_data.dataset)) # 678
-    #print("LENGTH OF TEST DATASET:", len(test_data.dataset)) # 3271
-
     testDatasetSize = len(test_data.dataset)
 
     # initialize the selected model with the config file and training data - also move to GPU device or CPU if this is not available

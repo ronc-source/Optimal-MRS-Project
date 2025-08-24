@@ -1,30 +1,21 @@
 import torch
 from torch import nn
-#from recbole.model.context_aware_recommender import FM
 
-# imports from recbole doc for new model creation
 from recbole.utils import InputType
 from recbole.model.loss import BPRLoss
 from recbole.model.init import xavier_normal_initialization
 from recbole.model.abstract_recommender import ContextRecommender
 
-# from fm.py
-from torch.nn.init import xavier_normal_
-from recbole.model.layers import BaseFactorizationMachine
-from recbole.model.layers import FMFirstOrderLinear
-
-
 # NOTE:
 # gated sum fusion is only performed on text and image modality encoder embeddings
 # all other features such as average_rating can be projected and concatenated without a gate
-# **projection is important to convert features into the embedding space supported by the FM model
-
 class GatedSumFusion(ContextRecommender):
 
     input_type = InputType.PAIRWISE
     
 
     def __init__(self, config, dataset):
+
         # explicitly declare neg_parent_asin and associate with existing itemID's
         self.negItemIDField = config["NEG_ITEM_ID_FIELD"]
         dataset.field2id_token[self.negItemIDField] = dataset.field2id_token[config["ITEM_ID_FIELD"]]
@@ -51,9 +42,6 @@ class GatedSumFusion(ContextRecommender):
         self.imgField = config["img_field"]
 
         # get the side-feature fields
-        # rating, timestamp, average_rating, rating_number, price
-
-        #self.ratingField = "rating"
         self.timestampField = "timestamp"
         self.averageRatingField = "average_rating"
         self.ratingNumberField = "rating_number"
@@ -70,7 +58,6 @@ class GatedSumFusion(ContextRecommender):
         self.imgProjectionLayer = nn.Linear(imgDim, self.embSize)
 
         # implement projection layer for the side-feature fields
-        #self.ratingProjectionLayer = nn.LazyLinear(embSize)
         self.timestampProjectionLayer = nn.Linear(1, self.embSize)
         self.averageRatingProjectionLayer = nn.Linear(1, self.embSize)
         self.ratingNumberProjectionLayer = nn.Linear(1, self.embSize)
@@ -84,9 +71,7 @@ class GatedSumFusion(ContextRecommender):
         self.userEmbedding = nn.Embedding(self.numUsers, self.embSize)
         self.itemEmbedding = nn.Embedding(self.numItems, self.embSize)
         self.loss = BPRLoss()
-        self.fm = BaseFactorizationMachine(reduce_sum=True)
         self.sigmoid = nn.Sigmoid()
-        self.firstOrderLinear = FMFirstOrderLinear(config, dataset)
         self.finalFusionLayer = nn.Linear(self.embSize, 1)
 
         # initialize parameters in accordance with guidelines for new models in recbole
@@ -101,274 +86,59 @@ class GatedSumFusion(ContextRecommender):
         userID = interaction[self.userIDField]
         itemID = interaction[self.itemIDField]
 
-        #print("INTERACTION: USERID and ITEMID")
-        #print("USERID", userID) # [6,6,6,...,19, 19, ... ,25,25...25] -> on GPU
-        #print("INTERACTION USER ID SHAPE", userID.shape) # torch.Size([303]) -> an array of 303 elements
-        #print("ITEMID", itemID) # [10, 93641, 65184, .... 85676] -> on GPU
-        #print("INTERACTION ITEM ID SHAPE", itemID.shape) # torch.Size[303] -> an array of 303 elements
-
         userIDEmb = self.userEmbedding(userID)
-        #print("USER ID EMBEDDING TEST", userIDEmb) # tensor([[ 0.035, -0.072 ,...], [0.0035, -0.072, ...]]) -> on GPU
-        #print("USER ID EMB SHAPE", userIDEmb.shape) # torch.Size([303, 64]) -> 64 is what we expect from embedding_size declared in the config
-
         itemIDEmb = self.itemEmbedding(itemID)
-        #print("ITEM ID EMBEDDING TEST", itemIDEmb) # tensor([[ 0.0136, -0.0002, ...], [0.0028, -0.0035, ...]]) -> on GPU
-        #print("ITEM ID EMB SHAPE", itemIDEmb.shape)  # torch.Size([303, 64])
-
-        # setup device - confirmed cuda:0
-        device = itemIDEmb.device
-
-        # INTERACTION TEST
-        #print("INTERACTION: BERT TEXT EMB FIELD FROM .INTER") 
-        #print(interaction[self.textField]) # tensor([[-3.3199e-01, -4.8726e-01, ...]]) -> on GPU
-        #print("INTERACTION TEXT BERT EMB FROM .INTER SHAPE", interaction[self.textField].shape) # torch.Size[303, 768] -> an array of 303 elements each of size 768 (text emb vector for BERT)
-
-        #print("INTERACTION: BERT DESC EMB FIELD FROM .ITEM")
-        #print(interaction[self.descField]) # tensor([[0., 0., .... 0]]) -> on GPU (device='cuda:0')
-        #print("INTERACTION DESC BERT EMB FROM .ITEM SHAPE", interaction[self.descField].shape) # torch.Size[303, 768] -> an array of 303 elements each of size 768 (text emb vector for BERT)
-
-        #print("INTERACTION: RESNET IMG EMB FIELD FROM .ITEM")
-        #print(interaction[self.imgField]) # tensor([[0.2225, 0.7562, ...], [0.2957, 1.0275, ...]]) ->On GPU -> device='cuda:0
-        #print("INTERACTION RESNET IMG EMB FROM .ITEM SHAPE", interaction[self.imgField].shape) # torch.Size[303, 2048] -> an array of 303 elements each of szie 2048 (resnet50 img emb vector size expected)
-
+        
         # get the precomputted embeddings from the atomic files and apply projection layers to the main text and image modality features
         textEmb = self.textProjectionLayer(interaction[self.textField])
         descEmb = self.descProjectionLayer(interaction[self.descField])
         imgEmb = self.imgProjectionLayer(interaction[self.imgField])
 
         # apply projections to the side features to convert to FM expected embedding size
-
         # do not use rating as it is utilized by recbole as a threshold label via the .yaml config
-        #ratingEmb = self.ratingProjectionLayer(interaction[self.ratingField])
-
-        #print("TEST STARTS HERE NOW YAY!")
-
-        # side features from .inter
-
-        # TIMESTAMP INTERACTION TEST
-        #print("INTERACTION: TIMESTAMP FIELD FROM .INTER") 
-        #print(interaction[self.timestampField]) # tensor([1.5497e+12, 1.5497e+12, ... 1.4703e+12]) -> on GPU
-        #print("INTERACTION TIMESTAMP FLOAT FIELD FROM .INTER SHAPE", interaction[self.timestampField].shape) # torch.Size([303]) -> this is just 303 elements of timestamp floats in a tensor array
 
         # unsqueeze to set torch shape to [303, 1] to say we have 303 elements of size 1 before we pass it to the projection layer
         timestampEmb = self.timestampProjectionLayer(interaction[self.timestampField].unsqueeze(-1))
-
-
-        #print("DID YOU BREAK NOW? 1")
-
-        # side features from .item
-
-        # AVERAGE_RATING INTERACTION TEST
-        #print("INTERACTION: AVERAGE_RATING FIELD FROM .ITEM") 
-        #print(interaction[self.averageRatingField]) # tensor([3.4000, 3.4000, 4.3000, ... 3.7000]) -> on GPU
-        #print("INTERACTION AVERAGE_RATING FLOAT FROM .ITEM SHAPE", interaction[self.averageRatingField].shape) # torch.Size[303] -> this is just 303 elements of average_rating in a tensor array
-
-        # AVERAGE_RATING VIA DATASET TEST
-        #print("FROM DATASET TEST: AVERAGE_RATING FIELD FROM .ITEM") 
-        #print(self.dataset.item_feat[self.averageRatingField]) # tensor([3.9283, 4.3000, .... ,3.1000, 3.6000, 3.5000]) -> probably on CPU, does not specify any device
-        #print("FROM DATASET TEST AVERAGE_RATING FLOAT FROM .ITEM SHAPE", self.dataset.item_feat[self.averageRatingField].shape) #torch.Size[100001] -> this is all instances of average_rating in the .item atomic file provided
-
-        # AVERAGE_RATING VIA DATASET TEST INDEXED BY itemID
-
-        #NOTE: Need to call .to(device) to attempt an index because this self.dataset.item_feat form of access for average_rating is stored on CPU and we need it on GPU to attempt index without error
-        #print("FROM DATASET and INDEXED VIA itemID TEST: AVERAGE_RATING FIELD FROM .ITEM") 
-        #print(self.dataset.item_feat[self.averageRatingField].to(device)[itemID])
-        #print("FROM DATASET and INDEXED VIA itemID TEST AVERAGE_RATING FLOAT FROM .ITEM SHAPE", self.dataset.item_feat[self.averageRatingField].to(device)[itemID].shape)
-
-
-        # old method
-        #averageRatingEmb = self.averageRatingProjectionLayer(self.dataset.item_feat[self.averageRatingField].to(device)[itemID].unsqueeze(-1))
         averageRatingEmb = self.averageRatingProjectionLayer(interaction[self.averageRatingField].unsqueeze(-1))
-
-        # RATING_NUMBER INTERACTION TEST
-        #print("INTERACTION: RATING_NUMBER FIELD FROM .ITEM") 
-        #print(interaction[self.ratingNumberField]) # tensor([8.0000e+00, 7.0000e+00, ... 4.0000e+00]) -> on GPU
-        #print("INTERACTION RATING_NUMBER FLOAT FROM .ITEM SHAPE", interaction[self.ratingNumberField].shape) # torch.Size[303] -> this is 303 elements of different rating numbers in a tensor array
-
-        # old method
-        #ratingNumberEmb = self.ratingNumberProjectionLayer(self.dataset.item_feat[self.ratingNumberField].to(device)[itemID].unsqueeze(-1))
         ratingNumberEmb = self.ratingNumberProjectionLayer(interaction[self.ratingNumberField].unsqueeze(-1))
-
-        # PRICE INTERACTION TEST
-        #print("INTERACTION: PRICE FIELD FROM .ITEM") 
-        #print(interaction[self.priceField]) # tensor([35.7181, 35.7181, ..., 79.9500, ... 35.7181]) -> on GPU
-        #print("INTERACTION PRICE FLOAT FROM .ITEM SHAPE", interaction[self.priceField].shape) # torch.Size[303] -> 303 elements of price in a tensor array
-
-        # old method
-        #priceEmb = self.priceProjectionLayer(self.dataset.item_feat[self.priceField].to(device)[itemID].unsqueeze(-1))
         priceEmb = self.priceProjectionLayer(interaction[self.priceField].unsqueeze(-1))
-
-        #print("DID YOU BREAK NOW? 2")
 
         # compute the gates for the text and image modality embeddings
         finalGate = self.sigmoid(self.scalarGate(torch.cat([textEmb, descEmb, imgEmb], dim=-1)))
-
-        #test = torch.cat([textEmb, descEmb, imgEmb], dim=-1)
-
-        #print("GATE FUSE TEST SHAPE:", test.shape) # [303, 192]
-
-        #print("TEST TEXT GATE")
-        #print("TEXT GATE RESULT:", textGate)
-        
-        #print("TEST DESC GATE")
-        #print("DESC GATE RESULT:", descGate)
-
-        #print("TEST IMG GATE")
-        #print("IMG GATE RESULT:", imgGate)
-
-        #print("DID YOU BREAK NOW? 3")
 
         # apply gated sum fusion on the .inter and .item modality components
         interFusion = userIDEmb + itemIDEmb + timestampEmb + ((1- finalGate) * textEmb)
         itemFusion = itemIDEmb + averageRatingEmb + ratingNumberEmb + priceEmb + ((1- finalGate) * descEmb) + (finalGate * imgEmb)
 
-        #print("TEST INTER FUSION RESULT", interFusion) # tensor([[ 4.1741e+11, -9.8166e+10, ...], [4.1741e+11, -9.8166e+10, ...]]) on GPU
-        #print("TEST INTER FUSION SHAPE", interFusion.shape) # torch.Size([303, 64]) -> 303 elements, each of size 64
-
-        #print("TEST ITEM FUSION RESULT", itemFusion) # tensor([[-3.0827, -3.9211, ...], [-2.8544, -4.2573, ...]]) # on GPU
-        #print("TEST ITEM FUSION SHAPE", itemFusion.shape) # torch.Size([303, 64]) -> 303 elements each of size 64
-
         completeFusion = interFusion + itemFusion
-        #print("TEST COMPLETE FUSION (INTER + ITEM)", completeFusion) # tensor([[ 4.1741e+11, -98166e+10, ..], ..., [3.9602e+11, -9.137e+10, ..]]) on GPU
-        #print("TEST COMPLETE FUSION SHAPE", completeFusion.shape) #torch.Size([303, 64]) -> 303 elements each of size 64
-
-        #print("DID YOU BREAK NOW? 4")
-
-        #fmInput = torch.stack([interFusion, itemFusion], dim=1)
-
-        #print("DID IT BREAK NOW? 5")
-
-        # old method imitiated from existing fm.py in recbole library
-        # score = self.firstOrderLinear(interaction) + self.fm(fmInput)
 
         # convert complete fusion from torch.Size([303, 64]) to torch.Size([303, 1])
         # this gets us 303 scores of shape [303], which we need in this function when we are provided 303 user-item pairings in this example forward interaction call
         # batch initially provided in forward function is 303 in this example
         scoresCalculated = self.finalFusionLayer(completeFusion).squeeze(-1)
-
-        #print("WOW WE MADE IT THROUGH!")
-
         return scoresCalculated
 
 
-    # from the docs - used to compute the loss, where the input parameters are Interaction
+    # inspired from the RecBole docs, used to compute the loss, where the input parameter is Interaction - https://recbole.io/docs/developer_guide/customize_models.html
     # returns a torch.Tensor for computing the BP information
     def calculate_loss(self, interaction):
         user = interaction[self.userIDField]
         pos_item = interaction[self.itemIDField]
-        #print("DID YOU BREAK HERE?")
         neg_item = interaction[self.negItemIDField]
-        #print("DID YOU BREAK NOW?")
 
-        user_e = self.userEmbedding(user)                        # [batch_size, embedding_size]
-        pos_item_e = self.itemEmbedding(pos_item)                # [batch_size, embedding_size]
-        neg_item_e = self.itemEmbedding(neg_item)                # [batch_size, embedding_size]
-        pos_item_score = torch.mul(user_e, pos_item_e).sum(dim=1) # [batch_size]
-        neg_item_score = torch.mul(user_e, neg_item_e).sum(dim=1) # [batch_size]
+        user_e = self.userEmbedding(user)                           # [batch_size, embedding_size]
+        pos_item_e = self.itemEmbedding(pos_item)                   # [batch_size, embedding_size]
+        neg_item_e = self.itemEmbedding(neg_item)                   # [batch_size, embedding_size]
+        pos_item_score = torch.mul(user_e, pos_item_e).sum(dim=1)   # [batch_size]
+        neg_item_score = torch.mul(user_e, neg_item_e).sum(dim=1)   # [batch_size]
 
-        loss = self.loss(pos_item_score, neg_item_score)          # []
+        loss = self.loss(pos_item_score, neg_item_score)            # []
 
         return loss
     
 
-    # from the docs - used to compute the score for a given user-item pair
+    # inspired from the RecBole implementation of fm.py
     # input is an interaction and the output is a score
-    # may not be required if we use full_sort_predict instead - which is an accelerated predict method that allows us to evaluate the full ranking
-
     def predict(self, interaction):
-        #print("INTERACTION TEXT")
         forwardedInteraction = self.forward(interaction)
-        #print("TEXT INTERACTION RESULT FROM FORWARD CALL", forwardedInteraction)
-        #print("TEST INTERACTION FORWARDED SHAPE", forwardedInteraction.shape)
-
-        #print("PREDICT TEST")
-        #res = self.sigmoid(self.forward(interaction))
-        #print("TEST PREDICT RESULT FROM FORWARD INTERACTION", res)
-        #print("TEST PREDICT SCORE SHAPE", res.shape)
         return forwardedInteraction
-        
-
-    # from the docs - this is an accelerated version of the predict method that allows us to evaluate the full ranking
-    # this function is utilized for ranking all items for a given user
-
-
-
-
-
-'''
-    def full_sort_predict(self, interaction):
-        
-        # single user full sort
-        # get user ID from the upcoming interaction
-        userID = interaction[self.userIDField]
-        userEmb = self.userEmbedding(userID)
-
-        # setup device
-        device = userEmb.device
-
-        # get all item static embeddings
-        allItemIDS = torch.arange(self.numItems, device=device)
-        allItemEmb = self.itemEmbedding(allItemIDS)
-
-        # modality features from the .inter and .item files of the dataset 
-        # move to GPU device so we do not do matrix multiplication on CPU and GPU device -- item data is originally stored on CPU
-        textInterFeatures = self.dataset.inter_feat[self.textField].to(device)
-        descItemFeatures = self.dataset.item_feat[self.descField].to(device)
-        imgItemFeatures = self.dataset.item_feat[self.imgField].to(device)
-
-        # side features from the dataset
-        timestampInterFeatures = self.dataset.inter_feat[self.timestampField].to(device)
-        averageRatingInterFeatures = self.dataset.item_feat[self.averageRatingField].to(device)
-        ratingNumberInterFeatures = self.dataset.item_feat[self.ratingNumberField].to(device)
-        priceInterFeatures = self.dataset.item_feat[self.priceField].to(device)
-
-        # apply projections to modality features
-        textEmb = self.textProjectionLayer(textInterFeatures)
-        descEmb = self.descProjectionLayer(descItemFeatures)
-        imgEmb = self.imgProjectionLayer(imgItemFeatures)
-        
-        # apply projections to side features
-        timestampEmb = self.timestampProjectionLayer(timestampInterFeatures.unsqueeze(-1))
-        averageRatingEmb = self.averageRatingProjectionLayer(averageRatingInterFeatures.unsqueeze(-1))
-        ratingNumberEmb = self.ratingNumberProjectionLayer(ratingNumberInterFeatures.unsqueeze(-1))
-        priceEmb = self.priceProjectionLayer(priceInterFeatures.unsqueeze(-1))
-
-        # apply gates to modality features
-        textGate = self.sigmoid(self.textGate(textEmb))
-        descGate = self.sigmoid(self.descGate(descEmb))
-        imgGate = self.sigmoid(self.imgGate(imgEmb))
-
-        # get the complete item side representation (itemID + any modality or side feature embeddings - no user embeddiings)
-        allItemFeatureFusion = allItemEmb + timestampEmb + (textGate * textEmb) + averageRatingEmb + ratingNumberEmb + priceEmb + (descGate * descEmb) + (imgGate * imgEmb)
-
-        # score on dot product in rankings
-        scores = torch.matmul(userEmb, allItemFeatureFusion.t()).squeeze(0)
-        return scores
-    '''
-
-
-
-
-
-
-''' Possible Implementation
-
-    # from the docs - used to compute the loss, where the input parameters are Interaction
-    # returns a torch.Tensor for computing the BP information
-    def calculate_loss(self, interaction):
-        # BPR loss needs positive and negative interactions
-
-        # get a positive interaction
-        posScore = self.forward(interaction)
-
-        # build a negative version of the interaction
-        negInter = interaction.clone()
-
-        # NEG_ITEM_ID_FIELD is provided automaticaly by recbole pairwise sampler
-        negInter[self.itemIDField] = interaction[self.NEG_ITEM_ID_FIELD]
-
-        negScore = self.forward(negInter)
-
-        loss = self.loss(posScore, negScore)
-        return loss
-'''
