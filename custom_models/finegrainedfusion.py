@@ -42,9 +42,9 @@ class FineGrainedFusion(ContextRecommender):
         self.itemIDField = config["ITEM_ID_FIELD"]
 
         # get the main text and image modality encoder feature fields from .inter and .item
-        self.textField = "text_BERT_emb"
-        self.descField = "desc_BERT_emb"
-        self.imgField = "img_RES50_emb"
+        self.textField = config["text_field"]
+        self.descField = config["desc_field"]
+        self.imgField = config["img_field"]
 
         # get the side-feature fields - do not include rating as it is used as a threshold column for the model
         self.timestampField = "timestamp"
@@ -69,7 +69,7 @@ class FineGrainedFusion(ContextRecommender):
         self.priceProjectionLayer = nn.Linear(1, self.embSize)
 
         # define amount of chunks/sub-vectors to separate embedding after projection (must be evenly divisible by 64 - our embSize)
-        self.chunkAmount = 4
+        self.chunkAmount = 8
 
         # set the chunk/sub-vector dimension, which should be the embSize (64) / the amount of chunks (8) = 8
         self.chunkDim = self.embSize // self.chunkAmount
@@ -206,9 +206,6 @@ class FineGrainedFusion(ContextRecommender):
             query=textSubVec,
             key=imgSubVec,
             value=imgSubVec
-            #attn_mask=None,
-            #dropout_p=0.0,
-            #is_causal=False
         )
 
         #print("TEST TORCH TEXT AND IMG FUSED SUB VEC", textAndImageFusedSubVectors)
@@ -227,7 +224,7 @@ class FineGrainedFusion(ContextRecommender):
         textAndImageFinalFuse = textAndImageFusedSubVectors.view(batchTotal, self.chunkAmount * self.chunkDim) # [303, 64]
         descAndImageFinalFuse = descAndImageFusedSubVectors.view(batchTotal, self.chunkAmount * self.chunkDim) # [303, 64]
 
-        finalFusion = userIDEmb + itemIDEmb + textAndImageFinalFuse + descAndImageFinalFuse + timestampEmb + averageRatingEmb + ratingNumberEmb + priceEmb # [303, 64]
+        finalFusion = userIDEmb + itemIDEmb + textEmb + descEmb + textAndImageFinalFuse + descAndImageFinalFuse + timestampEmb + averageRatingEmb + ratingNumberEmb + priceEmb # [303, 64]
 
         #print("FINAL FUSION VECTOR TEST", finalFusion)
         #print("FINAL FUSION VECTOR SHAPE TEST", finalFusion.shape) # [303, 64]'

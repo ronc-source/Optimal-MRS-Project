@@ -27,3 +27,6 @@ smoke_test.py
 
 # ignore old atomic files
 old_atomic_files/
+
+# ignore old config files
+configs/old_template

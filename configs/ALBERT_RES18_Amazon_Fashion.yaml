@@ -1,35 +1,35 @@
 # atomic file and dataset folder references
 data_path: C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/atomic_data_path
-dataset: BERT_RES50_Amazon_Fashion
+dataset: ALBERT_RES18_Amazon_Fashion
 
 # specify user and item ID fields
 USER_ID_FIELD: user_id
 ITEM_ID_FIELD: parent_asin
 
 # specify important modality encoder embedding fields from each atomic file
-INTERACTION_FEATURE_FIELDS: [text_BERT_emb]
+INTERACTION_FEATURE_FIELDS: [text_ALBERT_emb]
 USER_FEATURE_FIELDS: []
-ITEM_FEATURE_FIELDS: [desc_BERT_emb, img_RES50_emb]
+ITEM_FEATURE_FIELDS: [desc_ALBERT_emb, img_RES18_emb]
 
 # TURN OFF FOR ADAPTED FUSION MODELS
 ##########################################
 #numerical_features:
-#  - text_BERT_emb
-#  - desc_BERT_emb
-#  - img_RES50_emb
+#  - text_ALBERT_emb
+#  - desc_ALBERT_emb
+#  - img_RES18_emb
 
 #FEAT_COL_FIELDS:
-#  text_BERT_emb: 768
-#  desc_BERT_emb: 768
-#  img_RES50_emb: 2048
+#  text_ALBERT_emb: 768
+#  desc_ALBERT_emb: 768
+#  img_RES18_emb: 512
 
-#USE_FEAT_COLS: [user_id, parent_asin, text_BERT_emb, desc_BERT_emb, img_RES50_emb]
+#USE_FEAT_COLS: [user_id, parent_asin, text_ALBERT_emb, desc_ALBERT_emb, img_RES18_emb]
 ##########################################
 
 # add in references for adapted fusion models
-text_field: "text_BERT_emb"
-desc_field: "desc_BERT_emb"
-img_field: "img_RES50_emb"
+text_field: "text_ALBERT_emb"
+desc_field: "desc_ALBERT_emb"
+img_field: "img_RES18_emb"
 
 save_dataset: False
 
@@ -37,15 +37,15 @@ save_dataset: False
 NEG_ITEM_ID_FIELD: neg_parent_asin
 
 # specify the expected embedding sizes for the text and image modality encoder embeddings
-text_BERT_emb: 768
-desc_BERT_emb: 768 
-img_RES50_emb: 2048
+text_ALBERT_emb: 768
+desc_ALBERT_emb: 768 
+img_RES18_emb: 512
 
 # specify all the columns to load in each atomic file
 load_col:
-  inter:  [user_id, parent_asin, rating, timestamp, text_BERT_emb]
+  inter:  [user_id, parent_asin, rating, timestamp, text_ALBERT_emb]
   user:   [user_id]
-  item:   [parent_asin, average_rating, rating_number, price, desc_BERT_emb, img_RES50_emb]
+  item:   [parent_asin, average_rating, rating_number, price, desc_ALBERT_emb, img_RES18_emb]
 
 # normalize timestamp due to its large value and prevent it from overriding important signals in final scoring vector
 normalize_field: [timestamp]

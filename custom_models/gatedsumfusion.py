@@ -46,9 +46,9 @@ class GatedSumFusion(ContextRecommender):
         self.itemIDField = config["ITEM_ID_FIELD"]
 
         # get the main feature fields
-        self.textField = "text_BERT_emb"
-        self.descField = "desc_BERT_emb"
-        self.imgField = "img_RES50_emb"
+        self.textField = config["text_field"]
+        self.descField = config["desc_field"]
+        self.imgField = config["img_field"]
 
         # get the side-feature fields
         # rating, timestamp, average_rating, rating_number, price
@@ -78,9 +78,7 @@ class GatedSumFusion(ContextRecommender):
 
         # setup gates for gated sum fusion for all our text and image modality encoder embeddings
         # intention is to apply gates after we have applied the projection layer on our embedding so they are all in a common space
-        self.textGate = nn.Linear(self.embSize, self.embSize)
-        self.descGate = nn.Linear(self.embSize, self.embSize)
-        self.imgGate = nn.Linear(self.embSize, self.embSize)
+        self.scalarGate = nn.Linear(self.embSize * 3, 1)
 
         # define the layers and loss function
         self.userEmbedding = nn.Embedding(self.numUsers, self.embSize)
@@ -203,15 +201,26 @@ class GatedSumFusion(ContextRecommender):
         #print("DID YOU BREAK NOW? 2")
 
         # compute the gates for the text and image modality embeddings
-        textGate = self.sigmoid(self.textGate(textEmb))
-        descGate = self.sigmoid(self.descGate(descEmb))
-        imgGate = self.sigmoid(self.imgGate(imgEmb))
+        finalGate = self.sigmoid(self.scalarGate(torch.cat([textEmb, descEmb, imgEmb], dim=-1)))
+
+        #test = torch.cat([textEmb, descEmb, imgEmb], dim=-1)
+
+        #print("GATE FUSE TEST SHAPE:", test.shape) # [303, 192]
+
+        #print("TEST TEXT GATE")
+        #print("TEXT GATE RESULT:", textGate)
+        
+        #print("TEST DESC GATE")
+        #print("DESC GATE RESULT:", descGate)
+
+        #print("TEST IMG GATE")
+        #print("IMG GATE RESULT:", imgGate)
 
         #print("DID YOU BREAK NOW? 3")
 
         # apply gated sum fusion on the .inter and .item modality components
-        interFusion = userIDEmb + itemIDEmb + timestampEmb + (textGate * textEmb)
-        itemFusion = itemIDEmb + averageRatingEmb + ratingNumberEmb + priceEmb + (descGate * descEmb) + (imgGate * imgEmb)
+        interFusion = userIDEmb + itemIDEmb + timestampEmb + ((1- finalGate) * textEmb)
+        itemFusion = itemIDEmb + averageRatingEmb + ratingNumberEmb + priceEmb + ((1- finalGate) * descEmb) + (finalGate * imgEmb)
 
         #print("TEST INTER FUSION RESULT", interFusion) # tensor([[ 4.1741e+11, -9.8166e+10, ...], [4.1741e+11, -9.8166e+10, ...]]) on GPU
         #print("TEST INTER FUSION SHAPE", interFusion.shape) # torch.Size([303, 64]) -> 303 elements, each of size 64
@@ -242,9 +251,8 @@ class GatedSumFusion(ContextRecommender):
         return scoresCalculated
 
 
-    # from the recbole official docs - used to compute the loss, where the input parameters are Interaction - https://recbole.io/docs/developer_guide/customize_models.html
+    # from the docs - used to compute the loss, where the input parameters are Interaction
     # returns a torch.Tensor for computing the BP information
-    # implement loss function for pairwise BPR
     def calculate_loss(self, interaction):
         user = interaction[self.userIDField]
         pos_item = interaction[self.itemIDField]
@@ -252,9 +260,9 @@ class GatedSumFusion(ContextRecommender):
         neg_item = interaction[self.negItemIDField]
         #print("DID YOU BREAK NOW?")
 
-        user_e = self.userEmbedding(user)                         # [batch_size, embedding_size]
-        pos_item_e = self.itemEmbedding(pos_item)                 # [batch_size, embedding_size]
-        neg_item_e = self.itemEmbedding(neg_item)                 # [batch_size, embedding_size]
+        user_e = self.userEmbedding(user)                        # [batch_size, embedding_size]
+        pos_item_e = self.itemEmbedding(pos_item)                # [batch_size, embedding_size]
+        neg_item_e = self.itemEmbedding(neg_item)                # [batch_size, embedding_size]
         pos_item_score = torch.mul(user_e, pos_item_e).sum(dim=1) # [batch_size]
         neg_item_score = torch.mul(user_e, neg_item_e).sum(dim=1) # [batch_size]
 
@@ -263,12 +271,104 @@ class GatedSumFusion(ContextRecommender):
         return loss
     
 
-    # with full_sort turned off, pass interaction into the forward function
-    # this function is based off the recbole fm.py implementation
+    # from the docs - used to compute the score for a given user-item pair
+    # input is an interaction and the output is a score
+    # may not be required if we use full_sort_predict instead - which is an accelerated predict method that allows us to evaluate the full ranking
 
     def predict(self, interaction):
-        return self.sigmoid(self.forward(interaction))
+        #print("INTERACTION TEXT")
+        forwardedInteraction = self.forward(interaction)
+        #print("TEXT INTERACTION RESULT FROM FORWARD CALL", forwardedInteraction)
+        #print("TEST INTERACTION FORWARDED SHAPE", forwardedInteraction.shape)
+
+        #print("PREDICT TEST")
+        #res = self.sigmoid(self.forward(interaction))
+        #print("TEST PREDICT RESULT FROM FORWARD INTERACTION", res)
+        #print("TEST PREDICT SCORE SHAPE", res.shape)
+        return forwardedInteraction
         
 
     # from the docs - this is an accelerated version of the predict method that allows us to evaluate the full ranking
     # this function is utilized for ranking all items for a given user
+
+
+
+
+
+'''
+    def full_sort_predict(self, interaction):
+        
+        # single user full sort
+        # get user ID from the upcoming interaction
+        userID = interaction[self.userIDField]
+        userEmb = self.userEmbedding(userID)
+
+        # setup device
+        device = userEmb.device
+
+        # get all item static embeddings
+        allItemIDS = torch.arange(self.numItems, device=device)
+        allItemEmb = self.itemEmbedding(allItemIDS)
+
+        # modality features from the .inter and .item files of the dataset 
+        # move to GPU device so we do not do matrix multiplication on CPU and GPU device -- item data is originally stored on CPU
+        textInterFeatures = self.dataset.inter_feat[self.textField].to(device)
+        descItemFeatures = self.dataset.item_feat[self.descField].to(device)
+        imgItemFeatures = self.dataset.item_feat[self.imgField].to(device)
+
+        # side features from the dataset
+        timestampInterFeatures = self.dataset.inter_feat[self.timestampField].to(device)
+        averageRatingInterFeatures = self.dataset.item_feat[self.averageRatingField].to(device)
+        ratingNumberInterFeatures = self.dataset.item_feat[self.ratingNumberField].to(device)
+        priceInterFeatures = self.dataset.item_feat[self.priceField].to(device)
+
+        # apply projections to modality features
+        textEmb = self.textProjectionLayer(textInterFeatures)
+        descEmb = self.descProjectionLayer(descItemFeatures)
+        imgEmb = self.imgProjectionLayer(imgItemFeatures)
+        
+        # apply projections to side features
+        timestampEmb = self.timestampProjectionLayer(timestampInterFeatures.unsqueeze(-1))
+        averageRatingEmb = self.averageRatingProjectionLayer(averageRatingInterFeatures.unsqueeze(-1))
+        ratingNumberEmb = self.ratingNumberProjectionLayer(ratingNumberInterFeatures.unsqueeze(-1))
+        priceEmb = self.priceProjectionLayer(priceInterFeatures.unsqueeze(-1))
+
+        # apply gates to modality features
+        textGate = self.sigmoid(self.textGate(textEmb))
+        descGate = self.sigmoid(self.descGate(descEmb))
+        imgGate = self.sigmoid(self.imgGate(imgEmb))
+
+        # get the complete item side representation (itemID + any modality or side feature embeddings - no user embeddiings)
+        allItemFeatureFusion = allItemEmb + timestampEmb + (textGate * textEmb) + averageRatingEmb + ratingNumberEmb + priceEmb + (descGate * descEmb) + (imgGate * imgEmb)
+
+        # score on dot product in rankings
+        scores = torch.matmul(userEmb, allItemFeatureFusion.t()).squeeze(0)
+        return scores
+    '''
+
+
+
+
+
+
+''' Possible Implementation
+
+    # from the docs - used to compute the loss, where the input parameters are Interaction
+    # returns a torch.Tensor for computing the BP information
+    def calculate_loss(self, interaction):
+        # BPR loss needs positive and negative interactions
+
+        # get a positive interaction
+        posScore = self.forward(interaction)
+
+        # build a negative version of the interaction
+        negInter = interaction.clone()
+
+        # NEG_ITEM_ID_FIELD is provided automaticaly by recbole pairwise sampler
+        negInter[self.itemIDField] = interaction[self.NEG_ITEM_ID_FIELD]
+
+        negScore = self.forward(negInter)
+
+        loss = self.loss(posScore, negScore)
+        return loss
+'''

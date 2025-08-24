@@ -1,12 +1,6 @@
-#from recbole.quick_start import run_recbole
-
-#run_recbole(model='BPR', dataset='ml-100k')
-
-# next step to load dataset - https://recbole.io/docs/user_guide/usage/running_new_dataset.html
-
-# GOAL: Run baseline FM multimodal recommender against our generated atomic files with text (BERT) and image embeddings (RESNET50)
-
 from logging import getLogger
+
+import time
 
 # override PyTorch 2.6+ safety flag by forcing weights_only=False - will not affect model accuracy just remove security for checkpoints
 import torch, functools
@@ -17,19 +11,25 @@ from recbole.utils import init_seed, init_logger
 from recbole.config import Config
 from recbole.data import create_dataset, data_preparation
 from recbole.trainer import Trainer
+
+# baseline from RecBole
 from recbole.model.context_aware_recommender import FM
 
-# custom model
-#from recbole.model.custom_recommender.gatedsumfusion import GatedSumFusion
+# near quality to SOTA models from RecBole
+from recbole.model.context_aware_recommender import xDeepFM
+from recbole.model.context_aware_recommender import FiGNN
+
+# custom models
+from recbole.model.custom_recommender.gatedsumfusion import GatedSumFusion
 from recbole.model.custom_recommender.finegrainedfusion import FineGrainedFusion
 
-
-# based on recbole official docs for running a custom model https://recbole.io/docs/developer_guide/customize_models.html
+# setup main function based on recbole official docs for running a custom model https://recbole.io/docs/developer_guide/customize_models.html
 if __name__ == "__main__":
-    # load configuration with FM model with Amazon_Fashion dataset
+
+    # load configuration settings with declared model and reference to .YAML config file
     config = Config(
         model=FineGrainedFusion,
-        config_file_list=['C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/configs/BERT_RES50_Amazon_Fashion.yaml']
+        config_file_list=['C:/Users/ronni/OneDrive/Desktop/Optimal-MRS-Project/configs/TinyBERT_VITSMALL_Amazon_Fashion.yaml']
     )
 
     # initailize reproducibility parameters from config file
@@ -42,27 +42,73 @@ if __name__ == "__main__":
 
     # read in the data from the atomic files along with config specifications and display this data in the logs
     dataset = create_dataset(config)
+
+    #print("TEST DATASET")
+    #memb = dataset.item_feat['img_MOBILENETV2_emb']
+    # memb is an array of 100001 sequences—one per item.
+    #lengths = [len(x) for x in memb]  
+
+    #print("Number of items:", len(memb))
+    #print("First 5 sequence lengths:", lengths[:5])
+    #print("Max sequence length:", max(lengths))
+    #print("Min sequence length:", min(lengths))
+    #print("Unique lengths in first 100 items:", sorted(set(lengths[:100])))
+    #print("All fields:", dataset.fields())
+    # note: no () after float_like_fields
+    #print("Dense (float) fields:", dataset.float_like_fields)
+    # show the types that RecBole inferred for just your embed columns
+    #print({
+    #    k: dataset.field2type[k]
+    #    for k in ['text_BERT_emb','desc_BERT_emb','img_RES50_emb']
+    #})
+
+    #print("TEST DATASET 2")
+    #img_embs = dataset.item_feat['img_RES50_emb']  # or whatever your field is called
+    #print("First item emb[0][:5]:", img_embs[0][:5])
+    #print("Second item emb[1][:5]:", img_embs[1][:5])
+
     logger.info(dataset)
 
     # split data into training, validation and test datasets based on config file specifications
     train_data, valid_data, test_data = data_preparation(config, dataset)
 
-    # initialize the baseline FM model with the config file and training data - also move to GPU device or CPU if this is not available
+    # NOTE:
+    # there are a total of 38,730 positive interactions registered from 2,035,491 users, 100,001 items and an initial .inter file of 200,001
+    # the rest of the information provided from the atomic files will be used for negative sampling against each of the positive interactions in train and eval stages
 
-    #baselineModel = FM(config, train_data.dataset).to(config['device'])
+    #print("LENGTH OF TRAINING DATASET:", len(train_data.dataset)) # 34,781
+    #print("LENGTH OF VALIDATION DATASET:", len(valid_data.dataset)) # 678
+    #print("LENGTH OF TEST DATASET:", len(test_data.dataset)) # 3271
 
-    baselineModel = FineGrainedFusion(config, train_data.dataset).to(config['device'])
+    testDatasetSize = len(test_data.dataset)
 
-    # setup the trainer for the baseline model
-    trainer = Trainer(config, baselineModel)
+    # initialize the selected model with the config file and training data - also move to GPU device or CPU if this is not available
+    selectedModel = FineGrainedFusion(config, train_data.dataset).to(config['device'])
 
-    # fit the trainer with the training and validation dataset and get the best valid score and result
+    # setup the trainer for the selected model
+    trainer = Trainer(config, selectedModel)
+
+    # fit the trainer with the training and validation dataset and get both the best validation score and best validation result found during validation stages in training
     bestValidScore, bestValidResult = trainer.fit(train_data, valid_data)
 
-    # evaluate the test data against the model and display best results found
+    # display the best valid_metric, specified in the config file (NDCG@10), for the best model found during training
+    logger.info(f"Best model found across all epochs based on valid_metric: {bestValidScore}")
+
+    # display a list of metrics specified in the config file (recall@10, mrr@10, ndcg@10, gauc) for the best model found during training
+    logger.info(f"All metrics specified from config for the best model found: {bestValidResult}")
+    
+    # evaluate the test dataset against the best model found during training and display best results found and record inference time for the model in test set
+    startTestTime = time.perf_counter()
+
     testResult = trainer.evaluate(test_data)
-    logger.info(f"Best validation metric score found across all epochs: {bestValidScore}")
-    logger.info(f"All metrics specified from config from where the best validation metric score took place: {bestValidResult}")
+
+    endTestTime = time.perf_counter()
 
     # log result of model against unseen test data
-    logger.info(f"Test result for our model: {testResult}")
+    logger.info(f"Test result for our best model found: {testResult}")
+
+    # log average inference time for model against each test dataset row and convert from seconds to ms
+    logger.info(f"Average inference time per data row in test set for best model: {(((endTestTime - startTestTime) / testDatasetSize) * 1000)} ms")
+    
+    # log total time (in seconds) it took our best model to go through the test set
+    logger.info(f"Total time it took our best model to go through test dataset: {endTestTime - startTestTime} seconds")
